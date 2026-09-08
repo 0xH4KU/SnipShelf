@@ -1,6 +1,9 @@
-work/SnipShelf/.build/
-work/SnipShelf/dist/
-work/qa/
-outputs/
+# SwiftPM and packaged applications
+.build/
+.swiftpm/
+/dist/
+
+# Local archives, QA data, and legacy-path compatibility
+/.local/
+/work
 .DS_Store
-work/releases/

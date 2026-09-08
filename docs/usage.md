@@ -1,14 +1,14 @@
-# SnipShelf
+# Using SnipShelf
 
 **Keep the part you love.** A free, native macOS shelf for the visual pieces of your creative work.
 
 Draw a lasso or polygon around an element, keep the transparent cutout nearby, and drag it into your work. Built with SwiftUI, AppKit, ScreenCaptureKit, and the native Liquid Glass material. No third-party dependencies, account, uploads, analytics, or subscription.
 
-![SnipShelf with synthetic QA artwork](docs/shelf.jpg)
+![SnipShelf with synthetic QA artwork](shelf.jpg)
 
 ## Requirements and first launch
 
-- macOS 26 or newer. The included app is built for Apple Silicon.
+- macOS 26 or newer. The local build has been tested on Apple Silicon.
 - Open `SnipShelf.app`. It lives in the menu bar; there is no Dock icon.
 - Start a capture from the menu bar or press **Command–Shift–2**. If macOS asks, allow screen recording in **System Settings → Privacy & Security → Screen & System Audio Recording**. If the system requests a relaunch, quit and reopen the app.
 - Image import and recropping work without screen-recording permission.
@@ -16,9 +16,9 @@ Draw a lasso or polygon around an element, keep the transparent cutout nearby, a
 
 This build is ad-hoc signed for local use and **not notarized**. A downloaded copy may be blocked by Gatekeeper. Review the source or build locally; Apple also documents allowing a trusted app through Privacy & Security. Do not disable Gatekeeper globally. A future frictionless public download should use Developer ID signing and Apple notarization, which normally require paid Apple Developer Program membership. Free/open-source status does not itself waive that requirement.
 
-## New in v0.3: review, flexible edges, and batch selection
+## Selection and review
 
-![Review a selection before keeping it](docs/review.jpg)
+![Review a selection before keeping it](review.jpg)
 
 - Releasing a lasso (or finishing a polygon) now **reviews** the selection. Nothing is stored until you press the green **Confirm** button or Return in review.
 - **Red Delete** discards only the current outline and lets you start again on the same image. It does not delete existing shelf clips.
@@ -67,43 +67,4 @@ The app writes image files before atomically replacing the index. If saving fail
 
 Full-resolution images are loaded for import, crop, preview, or export. The grid lazily loads small disk previews into a bounded cache. PNG/index writes are currently serial; extremely large imports can briefly stall the interface. Move encoding to a dedicated queue if that becomes a measured bottleneck.
 
-## Build and test
-
-Install Xcode with the macOS 26 SDK or later, then from this source directory:
-
-```sh
-./script/build_and_run.sh          # safely stop the old app, build, sign, and launch
-./script/build_and_run.sh --build  # create dist/SnipShelf.app without launching
-./script/build_and_run.sh --verify
-./script/build_and_run.sh --logs
-./script/build_and_run.sh --debug
-DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test
-```
-
-`DEVELOPER_DIR` can point to a different installed Xcode. The script does not change global `xcode-select`. It refuses to replace a still-running app if its unsaved-clip prompt needs attention. The default SwiftPM build is a debug build; no Apple signing identity is required.
-
-For isolated manual QA, launch the app with:
-
-```sh
-open -n dist/SnipShelf.app --args --qa-directory /absolute/path/to/test-storage
-```
-
-Quit the other instance first. This also uses separate QA preferences. Test storage and synthetic artwork are never included in the normal shelf.
-
-The code is organized around `CaptureSession`, `Clip`, and `ShelfStore`. AppKit handles the floating panel, native multi-selection collection, mouse selection, hotkey registration, and drag/pasteboard boundaries; SwiftUI owns the shelf chrome, controls and crop presentation. `ImageCore` provides shared decoding, clipping, color conversion, and PNG output.
-
-To regenerate the code-drawn icon:
-
-```sh
-mkdir -p .build/AppIcon.iconset
-DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer xcrun swift script/make_icon.swift .build/AppIcon.iconset
-iconutil -c icns .build/AppIcon.iconset -o Assets/AppIcon.icns
-```
-
-See [VALIDATION.md](VALIDATION.md) for the exact checks performed and remaining manual checks. Figma compatibility is an intended workflow, not a certified integration.
-
-## Open source and support
-
-MIT licensed. All features are free. Optional tips are planned; there is no payment link or in-app prompt until a real maintainer-controlled destination is configured. Contributions and reproducible issue reports are welcome when a public repository is established.
-
-No public repository, release, donation account, or notarization submission was created as part of this local build.
+For build commands and the repository layout, see the [README](../README.md). See [validation](validation.md) for verified behavior and remaining checks.
