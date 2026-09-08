@@ -1,0 +1,6 @@
+work/SnipShelf/.build/
+work/SnipShelf/dist/
+work/qa/
+outputs/
+.DS_Store
+work/releases/
