@@ -3,15 +3,27 @@ import AppKit
 @testable import SnipShelf
 
 final class RevisionTests: XCTestCase {
-    func testCloserBorderCanReplaceHeldContour() throws {
+    func testPolygonBordersStayLockedUntilRelease() throws {
         let a = [CGPoint(x: 20, y: 10), CGPoint(x: 20, y: 90), CGPoint(x: 0, y: 90), CGPoint(x: 0, y: 10)]
         let b = a.map { CGPoint(x: $0.x + 5, y: $0.y) }
-        let map = ContourMap(contours: [a, b])
-        let old = try XCTUnwrap(map.nearest(to: CGPoint(x: 20, y: 50), radius: 10))
-        let next = try XCTUnwrap(map.nearest(to: CGPoint(x: 25, y: 50), radius: 10, previous: old))
-        XCTAssertNotEqual(old.contour, next.contour)
-        XCTAssertEqual(next.point.x, 25)
-        XCTAssertGreaterThanOrEqual(map.candidates(to: CGPoint(x: 22, y: 50), radius: 10).count, 2)
+        let c = a.map { CGPoint(x: $0.x + 44, y: $0.y) }
+        for scale: CGFloat in [1, 2] {
+            let map = ContourMap(contours: [a, b, c].map { $0.map { CGPoint(x: $0.x * scale, y: $0.y * scale) } })
+            var held = try XCTUnwrap(map.nearest(to: CGPoint(x: 20 * scale, y: 50 * scale), radius: 10 * scale))
+            for x: CGFloat in [24, 26, 24, 27, 39] {
+                held = try XCTUnwrap(map.nearest(to: CGPoint(x: x * scale, y: 50 * scale), radius: 10 * scale, previous: held))
+                XCTAssertEqual(held.contour, 0)
+                XCTAssertEqual(held.point.x, 20 * scale)
+            }
+            let released = try XCTUnwrap(map.nearest(to: CGPoint(x: 41 * scale, y: 50 * scale), radius: 10 * scale, previous: held))
+            XCTAssertEqual(released.contour, 2)
+            XCTAssertEqual(released.point.x, 44 * scale)
+            XCTAssertNil(map.nearest(to: CGPoint(x: 90 * scale, y: 50 * scale), radius: 10 * scale, previous: released))
+            let alternatives = map.candidates(to: CGPoint(x: 25 * scale, y: 50 * scale), radius: 10 * scale, previous: held)
+            XCTAssertEqual(alternatives.map(\.contour), [0, 1])
+            XCTAssertEqual(map.nearest(to: CGPoint(x: 25 * scale, y: 50 * scale), radius: 10 * scale, previous: alternatives[1])?.contour, 1)
+            XCTAssertEqual(map.nearest(to: CGPoint(x: 25 * scale, y: 50 * scale), radius: 10 * scale)?.contour, 1)
+        }
     }
     func testPixelEdgesFindThinBrowserLikeLinesWithoutVision() throws {
         let context = try ImageCore.context(width: 400, height: 220)
@@ -70,7 +82,7 @@ final class RevisionTests: XCTestCase {
         store.delete([])
         XCTAssertTrue(store.undoHistory.isEmpty)
     }
-    @MainActor func testScreenLassoGetsPixelAssistanceBeforeVisionFinishes() async throws {
+    @MainActor func testScreenLassoStaysFreehandBeforeVisionFinishes() async throws {
         _ = NSApplication.shared
         let context = try ImageCore.context(width: 100, height: 100)
         context.setFillColor(CGColor(gray: 1, alpha: 1)); context.fill(CGRect(x: 0, y: 0, width: 100, height: 100))
@@ -96,6 +108,6 @@ final class RevisionTests: XCTestCase {
             view.mouseUp(with: event(.leftMouseUp, start))
             sizes.append(try XCTUnwrap(model.reviewImage).width)
         }
-        XCTAssertLessThan(sizes[0], sizes[1])
+        XCTAssertEqual(sizes[0], sizes[1])
     }
 }

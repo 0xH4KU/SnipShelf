@@ -2,7 +2,31 @@
 
 Validation date: 2026-09-08. Host: Apple Silicon, macOS 27.0 (26A5425a). Toolchain: Xcode 26.6 (17F113), macOS SDK 26.5. Deployment target: macOS 26.0. This is a local ad-hoc signed debug build, not a notarized public release.
 
-## v0.3 checks
+## Freehand-first update
+
+On 2026-09-08, `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test` passed **23 tests, 0 failures**. Lasso now records the freehand gesture with lighter stabilization and optional bounded edge nudges. Contour locking, pixel scans, snap rings, Tab edge selection, and automatic contour bridging are absent from the freehand path. Polygon mode retains explicit snapping.
+
+- The jitter trace remains below 40% of its original vertical noise energy. Filter lag is bounded to one screen point; fast deliberate motion reaches its input immediately.
+- At 1×, 2×, and 3.5× coordinates, edge correction stays below 1.1 screen points. Crossing an edge remains freehand; equally close borders, stationary input, and dense regions produce no correction. Very small movements fade the correction instead of toggling it on.
+- An AppKit trace crossing multiple borders and making sharp turns stays within 2.1 screen points of the pointer for the tested samples. Each drag appends at most one point, Tab leaves the freehand path intact, and the review PNG matches a crop made from the displayed path. Option bypass is covered separately in the same trace.
+- Before Vision finishes, lasso output matches freehand output even over high-contrast source pixels. A late result does not change the active stroke.
+- The dense-region fallback handled 10,000 synthetic guidance calls in about 6 ms in this debug test run. This measures the guidance helper only, not drawing, screen capture, or end-to-end frame latency.
+
+Physical mouse/trackpad feel and the user's exact complex artwork have not been reproduced. The target is unobtrusive assistance, not a claim that subjective smoothness is established by these tests. The stronger lasso locking described in the historical sections below is superseded.
+
+## Earlier lasso stability update (superseded for freehand)
+
+On 2026-09-08, `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test` passed **22 tests, 0 failures**. The update retains Vision and changes edge selection to hold a local contour until the pointer leaves twice the acquisition radius. Pixel edges are a local fallback, with motion prediction and a fixed sampling grid.
+
+- Replaced the old immediate closer-border-switch assertion with repeated nearby-border drift, release, reacquisition, and explicit alternative selection at 1× and 2× scale.
+- Added a narrow-shape trace that stays on one side while allowing backward movement, and releases on a deliberate outward pull.
+- Added pixel fallback drift checks at native and coarser sampling scales.
+- Delivered AppKit hover, Tab, mouse-down, drag, and mouse-up events to the canvas. Checked crop dimensions, alpha coverage along the border, and source pixels to verify that a stronger nearby pixel edge does not steal the contour and the Tab-selected contour survives mouse-down.
+- Existing corner bridging, Option bypass, late Vision arrival, review/continue/confirm, and image/persistence checks remain passing.
+
+These are synthetic regression checks, not a reproduction of the user's exact source image or a physical mouse/trackpad hand-feel evaluation. Dense texture, low contrast, and pixel-only junctions still require manual evaluation. The earlier v0.3 immediate-switch behavior described below is superseded by this update.
+
+## v0.3 checks (before the stability update)
 
 **19 automated tests pass.** Six new regression checks cover closer-border switching, thin browser-like pixel edges without Vision, resuming in the middle of an existing segment, Delete/Continue/Confirm state transitions and exactly-once confirmation, batch deletion/undo preserving newer clips, and screen-lasso pixel assistance before Vision has finished.
 

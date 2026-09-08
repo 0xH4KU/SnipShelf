@@ -23,7 +23,7 @@ final class CanvasModel {
     var resumeToken = 0
     var reviewing: Bool { reviewImage != nil }
     var hasOutline: Bool { selecting || reviewing }
-    var edgeStatus = "Pixel edges ready · refining contours…"
+    var edgeStatus = "Freehand ready · preparing edge help…"
     private var analyzed = false
     @ObservationIgnored private let preferences: UserDefaults?
     var complete: (CGImage) -> Void
@@ -47,10 +47,10 @@ final class CanvasModel {
                 let map = try await task.value
                 guard !Task.isCancelled else { return }
                 edgeMap = map
-                edgeStatus = map.isEmpty ? "Using local pixel edges" : "Edges ready · Tab switches · ⌥ bypasses"
+                edgeStatus = map.isEmpty ? "Freehand ready" : "Gentle edge help ready"
             } catch {
                 guard !Task.isCancelled else { return }
-                edgeStatus = "Using local pixel edges"
+                edgeStatus = "Freehand ready"
             }
         } onCancel: { task.cancel() }
     }
@@ -101,16 +101,18 @@ struct CaptureView: View {
                             VStack(alignment: .leading, spacing: 16) {
                                 Text("Lasso assistance").font(.headline)
                                 Text(model.edgeStatus).font(.caption).foregroundStyle(.secondary)
-                                Toggle("Snap to edges", isOn: $model.snapEnabled)
-                                VStack(alignment: .leading, spacing: 6) {
+                                Toggle(model.mode == .lasso ? "Gentle edge help" : "Snap to edges", isOn: $model.snapEnabled)
+                                if model.mode == .polygon { VStack(alignment: .leading, spacing: 6) {
                                     HStack { Text("Snap distance"); Spacer(); Text("\(Int(model.snapRadius)) pt").foregroundStyle(.secondary) }
                                     Slider(value: $model.snapRadius, in: 4...24, step: 1).accessibilityLabel("Snap distance")
-                                }.disabled(!model.snapEnabled)
+                                }.disabled(!model.snapEnabled) }
                                 VStack(alignment: .leading, spacing: 6) {
                                     HStack { Text("Steadiness"); Spacer(); Text(model.smoothing == 0 ? "Off" : "\(Int(model.smoothing * 100))%").foregroundStyle(.secondary) }
                                     Slider(value: $model.smoothing, in: 0...1).accessibilityLabel("Steadiness")
                                 }
-                                Text("Slow strokes are steadied; quick movements stay responsive. Hold Option to bypass snapping.")
+                                Text(model.mode == .lasso
+                                     ? "Draw naturally. Edge help makes tiny adjustments without holding your line. Hold Option to bypass edge help."
+                                     : "Tab switches edges; hold Option to bypass snapping.")
                                     .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                             }.padding(20).frame(width: 270)
                         }
@@ -127,7 +129,7 @@ struct CaptureView: View {
                     Button { model.cancel() } label: { Image(systemName: "xmark") }.help("Cancel (Esc)").keyboardShortcut(.cancelAction)
                 }.buttonStyle(.borderless).padding(.horizontal, 16).padding(.vertical, 12)
                     .glassEffect(.regular, in: Capsule())
-                Text(model.error ?? (model.mode == .lasso ? "Draw freely · release to review · Tab switches edges · ⌥ bypasses" : "Click points · Return to review · Delete to undo"))
+                Text(model.error ?? (model.mode == .lasso ? "Draw freely · release to review · ⌥ bypasses edge help" : "Click points · Return to review · Delete to undo"))
                     .font(.system(size: 12, weight: .medium)).padding(.horizontal, 14).padding(.vertical, 7)
                     .glassEffect(.regular, in: Capsule())
                     .allowsHitTesting(false)
@@ -173,7 +175,7 @@ struct SelectionCanvas: NSViewRepresentable {
 
 final class CanvasNSView: NSView {
     let model: CanvasModel
-    private var points: [CGPoint] = []
+    private(set) var points: [CGPoint] = []
     private var hover: CGPoint?
     private var seenReset = 0
     private var tracking: NSTrackingArea?
@@ -190,7 +192,6 @@ final class CanvasNSView: NSView {
     private var alternatives: [ContourMap.Hit] = []
     private var alternativeIndex = 0
     private var lastPointer: CGPoint?
-    private var manualTarget: (edge: CGPoint, pointer: CGPoint)?
     override var isFlipped: Bool { true }
     override var acceptsFirstResponder: Bool { true }
     init(model: CanvasModel) {
@@ -200,7 +201,7 @@ final class CanvasNSView: NSView {
         setAccessibilityElement(true)
         setAccessibilityRole(.image)
         setAccessibilityLabel("Image selection canvas")
-        setAccessibilityHelp("Choose Lasso and drag, or Polygon and click points. Release or press Return to review. Tab switches edges. Confirm saves; Continue retraces; Delete discards the current selection. Escape cancels.")
+        setAccessibilityHelp("Choose Lasso and draw freely, or Polygon and click points. Release or press Return to review. Tab switches polygon edges. Confirm saves; Continue retraces; Delete discards the current selection. Escape cancels.")
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
     override func viewDidMoveToWindow() { super.viewDidMoveToWindow(); window?.makeFirstResponder(self) }
@@ -212,13 +213,14 @@ final class CanvasNSView: NSView {
         super.updateTrackingAreas()
     }
     func refresh() {
-        if !model.snapEnabled { snappedPoint = nil }
+        if !model.snapEnabled { previousHit = nil; snappedPoint = nil; alternatives = []; lastPointer = nil }
         if seenResume != model.resumeToken {
-            seenResume = model.resumeToken; continuing = true; draggingLasso = false; manualTarget = nil
-            previousHit = nil; snappedPoint = nil; stabilizer.reset()
+            seenResume = model.resumeToken; continuing = true; draggingLasso = false; lastPointer = nil
+            previousHit = nil; snappedPoint = nil; alternatives = []; stabilizer.reset()
+            strokeEdges = model.edgeMap
             window?.makeFirstResponder(self)
         }
-        if seenReset != model.resetToken { points.removeAll(); manualTarget = nil; continuing = false; draggingLasso = false; hover = nil; previousHit = nil; snappedPoint = nil; stabilizer.reset(); seenReset = model.resetToken }
+        if seenReset != model.resetToken { points.removeAll(); lastPointer = nil; alternatives = []; continuing = false; draggingLasso = false; hover = nil; previousHit = nil; snappedPoint = nil; stabilizer.reset(); seenReset = model.resetToken }
         needsDisplay = true
     }
     var imageRect: CGRect {
@@ -301,45 +303,39 @@ final class CanvasNSView: NSView {
     private func edgeCandidates(at point: CGPoint) -> [ContourMap.Hit] {
         let radius = CGFloat(model.snapRadius) * pixelsPerPoint
         let contours = strokeEdges?.candidates(to: point, radius: radius, previous: previousHit) ?? []
-        let pixels = model.pixelEdges?.candidates(to: point, radius: radius) ?? []
-        func score(_ hit: ContourMap.Hit) -> CGFloat {
-            hit.distance + (hit.contour < 0 ? pixelsPerPoint : 0)
-                - (hit.contour >= 0 && hit.contour == previousHit?.contour ? radius * 0.15 : 0)
-        }
-        let sorted = (contours + pixels).sorted { score($0) < score($1) }
+        let movement = lastPointer.map { CGPoint(x: point.x - $0.x, y: point.y - $0.y) } ?? .zero
+        // Pixels are a fallback, never a competing source while a contour is available.
+        let candidates = contours.isEmpty
+            ? (model.pixelEdges?.candidates(to: point, radius: radius, previous: previousHit, movement: movement) ?? [])
+            : contours
         var result: [ContourMap.Hit] = []
-        for hit in sorted {
+        for hit in candidates {
             if result.allSatisfy({ hypot($0.point.x - hit.point.x, $0.point.y - hit.point.y) > 2 * pixelsPerPoint }) { result.append(hit) }
             if result.count == 6 { break }
         }
         return result
     }
-    private func assisted(_ raw: CGPoint, smoothing: Bool, bypass: Bool) -> [CGPoint] {
+    private func assisted(_ raw: CGPoint, smoothing: Bool, bypass: Bool) -> CGPoint {
         let input = smoothing ? stabilizer.append(raw, strength: CGFloat(model.smoothing), pixelsPerPoint: pixelsPerPoint) : raw
-        lastPointer = input
+        defer { lastPointer = input }
         guard model.snapEnabled, !bypass else {
-            manualTarget = nil
             previousHit = nil; snappedPoint = nil; alternatives = []
-            return [input]
+            return input
+        }
+        if model.mode == .lasso {
+            previousHit = nil; snappedPoint = nil; alternatives = []
+            let movement = lastPointer.map { CGPoint(x: input.x - $0.x, y: input.y - $0.y) } ?? .zero
+            return strokeEdges?.nudged(input, movement: movement, pixelsPerPoint: pixelsPerPoint) ?? input
         }
         alternatives = edgeCandidates(at: input); alternativeIndex = 0
-        guard var hit = alternatives.first else { manualTarget = nil; previousHit = nil; snappedPoint = nil; return [input] }
-        if let target = manualTarget {
-            let predicted = CGPoint(x: target.edge.x + input.x - target.pointer.x, y: target.edge.y + input.y - target.pointer.y)
-            if let chosen = alternatives.min(by: { hypot($0.point.x - predicted.x, $0.point.y - predicted.y) < hypot($1.point.x - predicted.x, $1.point.y - predicted.y) }),
-               hypot(chosen.point.x - predicted.x, chosen.point.y - predicted.y) <= CGFloat(model.snapRadius) * pixelsPerPoint * 0.75 {
-                hit = chosen
-                manualTarget = (chosen.point, input)
-            } else { manualTarget = nil }
-        }
-        let route = smoothing ? (strokeEdges?.bridge(from: previousHit, to: hit, radius: CGFloat(model.snapRadius) * pixelsPerPoint) ?? [hit.point]) : [hit.point]
+        guard let hit = alternatives.first else { previousHit = nil; snappedPoint = nil; return input }
         previousHit = hit; snappedPoint = hit.point
-        return route
+        return hit.point
     }
     private func appendLasso(_ event: NSEvent) {
         if let old = snappedPoint { setNeedsDisplay(ringRect(old)) }
-        for point in assisted(pixelPoint(event), smoothing: true, bypass: event.modifierFlags.contains(.option)) {
-            if let last = points.last, hypot(point.x - last.x, point.y - last.y) < 0.4 * pixelsPerPoint { continue }
+        let point = assisted(pixelPoint(event), smoothing: true, bypass: event.modifierFlags.contains(.option))
+        if points.last.map({ hypot(point.x - $0.x, point.y - $0.y) >= 0.4 * pixelsPerPoint }) ?? true {
             points.append(point)
             strokeBounds = strokeBounds.union(ringRect(point))
         }
@@ -352,7 +348,7 @@ final class CanvasNSView: NSView {
     }
     override func flagsChanged(with event: NSEvent) {
         optionDown = event.modifierFlags.contains(.option)
-        if optionDown { manualTarget = nil; previousHit = nil; snappedPoint = nil }
+        if optionDown { previousHit = nil; snappedPoint = nil; alternatives = []; lastPointer = nil }
         needsDisplay = true
     }
     override func mouseDown(with event: NSEvent) {
@@ -363,15 +359,15 @@ final class CanvasNSView: NSView {
         model.error = nil
         optionDown = event.modifierFlags.contains(.option)
         if !model.selecting || (model.mode == .lasso && !continuing) {
-            stabilizer.reset(); previousHit = nil; snappedPoint = nil
+            stabilizer.reset()
             // Freeze detection for this stroke; an arriving Vision result must not bend a stroke in progress.
             strokeEdges = model.edgeMap
         }
-        let point = assisted(pixelPoint(event), smoothing: model.mode == .lasso, bypass: optionDown).last!
+        let point = assisted(pixelPoint(event), smoothing: model.mode == .lasso, bypass: optionDown)
         if continuing {
             points = LassoPath.continuing(points, near: point, radius: 12 * pixelsPerPoint)
             strokeBounds = points.reduce(CGRect.null) { $0.union(ringRect($1)) }
-            continuing = false; strokeEdges = model.edgeMap
+            continuing = false
         } else if model.mode == .lasso { points = [point]; strokeBounds = ringRect(point) }
         else {
             if points.count >= 3, let first = points.first,
@@ -399,14 +395,12 @@ final class CanvasNSView: NSView {
         guard !model.reviewing else { return }
         let oldSnap = snappedPoint
         hover = pixelPoint(event)
-        lastPointer = hover
         if !model.selecting, model.snapEnabled, !event.modifierFlags.contains(.option) {
             strokeEdges = model.edgeMap
-            alternatives = edgeCandidates(at: hover!); alternativeIndex = 0
-            snappedPoint = alternatives.first?.point
+            hover = assisted(hover!, smoothing: false, bypass: false)
         } else if model.mode == .polygon, model.selecting {
-            hover = assisted(hover!, smoothing: false, bypass: event.modifierFlags.contains(.option)).last
-        } else if !model.selecting { snappedPoint = nil }
+            hover = assisted(hover!, smoothing: false, bypass: event.modifierFlags.contains(.option))
+        } else if !model.selecting { previousHit = nil; snappedPoint = nil; alternatives = []; lastPointer = nil }
         if model.selecting { needsDisplay = true }
         else {
             if let oldSnap { setNeedsDisplay(ringRect(oldSnap)) }
@@ -420,10 +414,9 @@ final class CanvasNSView: NSView {
             if model.reviewing { model.confirm() }
             else if model.mode == .polygon || continuing { finish() }
         case 48:
-            guard !model.reviewing, model.snapEnabled, !optionDown, alternatives.count > 1 else { return }
+            guard model.mode == .polygon, !model.reviewing, model.snapEnabled, !optionDown, alternatives.count > 1 else { return }
             alternativeIndex = (alternativeIndex + 1) % alternatives.count
             let hit = alternatives[alternativeIndex]
-            if let lastPointer { manualTarget = (hit.point, lastPointer) }
             previousHit = hit; snappedPoint = hit.point; hover = hit.point
             if model.selecting && !points.isEmpty { points[points.count - 1] = hit.point }
             needsDisplay = true
@@ -447,6 +440,6 @@ final class CanvasNSView: NSView {
     }
     private func finish() {
         do { try model.prepareReview(points: points); snappedPoint = nil; hover = nil; needsDisplay = true }
-        catch { model.error = error.localizedDescription; points.removeAll(); previousHit = nil; snappedPoint = nil; stabilizer.reset(); model.selecting = false; needsDisplay = true }
+        catch { model.error = error.localizedDescription; points.removeAll(); previousHit = nil; snappedPoint = nil; alternatives = []; lastPointer = nil; stabilizer.reset(); model.selecting = false; needsDisplay = true }
     }
 }

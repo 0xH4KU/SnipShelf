@@ -25,7 +25,7 @@ struct ShelfCollection: NSViewRepresentable {
         collection.delegate = context.coordinator
         collection.register(Item.self, forItemWithIdentifier: NSUserInterfaceItemIdentifier("clip"))
         collection.setDraggingSourceOperationMask(.copy, forLocal: false)
-        collection.setDraggingSourceOperationMask(.copy, forLocal: true)
+        collection.setDraggingSourceOperationMask([], forLocal: true)
         scroll.documentView = collection
         return scroll
     }

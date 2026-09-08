@@ -9,7 +9,8 @@ struct LassoStabilizer {
     mutating func append(_ input: CGPoint, strength: CGFloat, pixelsPerPoint: CGFloat) -> CGPoint {
         guard let previous = point, strength > 0 else { point = input; return input }
         let distance = hypot(input.x - previous.x, input.y - previous.y)
-        let radius = (1 + 6 * min(1, strength)) * max(0.001, pixelsPerPoint)
+        // The maximum lag is radius / 4: at most one screen point, even at full strength.
+        let radius = (1 + 3 * min(1, strength)) * max(0.001, pixelsPerPoint)
         let weight = min(1, max(0.18, distance / radius))
         let result = CGPoint(x: previous.x + (input.x - previous.x) * weight,
                              y: previous.y + (input.y - previous.y) * weight)
@@ -34,6 +35,7 @@ struct ContourMap: Sendable {
     }
     private struct Cell: Hashable, Sendable { let x: Int; let y: Int }
     let contours: [[CGPoint]]
+    private let arcLengths: [[CGFloat]]
     private var segments: [Segment] = []
     private var cells: [Cell: [Int]] = [:]
     private let cellSize: CGFloat
@@ -41,6 +43,14 @@ struct ContourMap: Sendable {
 
     init(contours: [[CGPoint]], cellSize: CGFloat = 32) {
         self.contours = contours
+        arcLengths = contours.map { points in
+            var lengths: [CGFloat] = [0]
+            for i in points.indices {
+                let next = points[(i + 1) % points.count]
+                lengths.append(lengths.last! + hypot(next.x - points[i].x, next.y - points[i].y))
+            }
+            return lengths
+        }
         self.cellSize = max(1, cellSize)
         for (id, contour) in contours.enumerated() where contour.count > 2 {
             for i in contour.indices {
@@ -68,12 +78,13 @@ struct ContourMap: Sendable {
     }
     func candidates(to point: CGPoint, radius: CGFloat, previous: Hit? = nil) -> [Hit] {
         guard radius > 0, radius.isFinite, point.x.isFinite, point.y.isFinite else { return [] }
-        let reach = radius * (previous == nil ? 1 : 1.25)
+        let reach = radius * (previous == nil ? 1 : 2)
         let minCell = cell(at: CGPoint(x: point.x - reach, y: point.y - reach))
         let maxCell = cell(at: CGPoint(x: point.x + reach, y: point.y + reach))
         var candidates = Set<Int>()
         for x in minCell.x...maxCell.x { for y in minCell.y...maxCell.y { candidates.formUnion(cells[Cell(x: x, y: y)] ?? []) } }
         var hits: [Int: Hit] = [:]
+        var held: Hit?
         for id in candidates.sorted() {
             let s = segments[id]
             let dx = s.b.x - s.a.x, dy = s.b.y - s.a.y
@@ -81,45 +92,74 @@ struct ContourMap: Sendable {
             let projected = CGPoint(x: s.a.x + t * dx, y: s.a.y + t * dy)
             let distance = hypot(point.x - projected.x, point.y - projected.y)
             let hit = Hit(point: projected, contour: s.contour, segment: s.index, t: t, distance: distance)
-            let allowed = s.contour == previous?.contour ? reach : radius
-            if distance <= allowed && distance < (hits[s.contour]?.distance ?? .infinity) { hits[s.contour] = hit }
+            if distance <= radius && distance < (hits[s.contour]?.distance ?? .infinity) { hits[s.contour] = hit }
+            if let previous, s.contour == previous.contour, distance <= reach {
+                let lengths = arcLengths[s.contour]
+                let start = lengths[previous.segment] + previous.t * (lengths[previous.segment + 1] - lengths[previous.segment])
+                let end = lengths[s.index] + t * (lengths[s.index + 1] - lengths[s.index])
+                let arc = abs(end - start)
+                let direct = hypot(projected.x - previous.point.x, projected.y - previous.point.y)
+                // Stay on the local branch, even when another side of the same outline is closer.
+                if min(arc, lengths.last! - arc) <= direct * 1.6 + radius,
+                   distance < (held?.distance ?? .infinity) { held = hit }
+            }
         }
-        // Small preference, not a lock: a meaningfully closer border always wins.
-        func score(_ hit: Hit) -> CGFloat { hit.distance - (hit.contour == previous?.contour ? radius * 0.15 : 0) }
-        return hits.values.sorted { score($0) == score($1) ? $0.contour < $1.contour : score($0) < score($1) }
+        if let held { hits[held.contour] = held }
+        return hits.values.sorted {
+            if ($0.contour == held?.contour) != ($1.contour == held?.contour) { return $0.contour == held?.contour }
+            return $0.distance == $1.distance ? $0.contour < $1.contour : $0.distance < $1.distance
+        }
     }
 
-    /// Follow intervening vertices, so sparse mouse events don't cut across a contour's corner.
-    func bridge(from start: Hit?, to end: Hit, radius: CGFloat) -> [CGPoint] {
-        guard let start, start.contour >= 0, start.contour == end.contour else { return [end.point] }
-        let contour = contours[end.contour]
-        if start.segment == end.segment { return [end.point] }
-        let direct = hypot(end.point.x - start.point.x, end.point.y - start.point.y)
-        let limit = direct * 1.6 + radius
-        func route(forward: Bool) -> [CGPoint]? {
-            if start.segment == end.segment && (forward ? end.t >= start.t : end.t <= start.t) { return [end.point] }
-            var result: [CGPoint] = []
-            var segment = start.segment
-            var distance: CGFloat = 0
-            var last = start.point
-            for _ in 0..<contour.count {
-                let vertex = forward ? (segment + 1) % contour.count : segment
-                distance += hypot(contour[vertex].x - last.x, contour[vertex].y - last.y)
-                if distance > limit { return nil }
-                last = contour[vertex]
-                result.append(last)
-                segment = (segment + (forward ? 1 : contour.count - 1)) % contour.count
-                if segment == end.segment { break }
+    /// Freehand guidance never follows a contour: it only nudges toward an unambiguous, parallel edge.
+    func nudged(_ point: CGPoint, movement: CGPoint, pixelsPerPoint scale: CGFloat) -> CGPoint {
+        let travel = hypot(movement.x, movement.y)
+        guard scale.isFinite, scale > 0, point.x.isFinite, point.y.isFinite,
+              travel.isFinite, travel > 0 else { return point }
+        let radius = 4 * scale
+        let first = cell(at: CGPoint(x: point.x - radius, y: point.y - radius))
+        let last = cell(at: CGPoint(x: point.x + radius, y: point.y + radius))
+        guard last.x - first.x <= 8, last.y - first.y <= 8 else { return point }
+        var nearby = Set<Int>()
+        var entries = 0
+        for x in first.x...last.x { for y in first.y...last.y {
+            let ids = cells[Cell(x: x, y: y)] ?? []
+            entries += ids.count
+            // ponytail: dense regions yield to freehand after 256 index entries; no frame waits for exhaustive search.
+            guard entries <= 256 else { return point }
+            nearby.formUnion(ids)
+        } }
+        var best: (point: CGPoint, distance: CGFloat, alignment: CGFloat)?
+        var otherDistance = CGFloat.infinity
+        for id in nearby.sorted() {
+            let segment = segments[id]
+            let dx = segment.b.x - segment.a.x, dy = segment.b.y - segment.a.y
+            let length = hypot(dx, dy)
+            let t = ((point.x - segment.a.x) * dx + (point.y - segment.a.y) * dy) / (length * length)
+            // Fade out near vertices instead of pulling the hand around a corner.
+            guard t > 0, t < 1 else { continue }
+            let projected = CGPoint(x: segment.a.x + t * dx, y: segment.a.y + t * dy)
+            let distance = hypot(projected.x - point.x, projected.y - point.y)
+            guard distance < radius else { continue }
+            let alignment = abs(movement.x * dx + movement.y * dy) / (travel * length)
+            let endFade = min(1, min(t, 1 - t) * length / (2 * scale))
+            if let old = best, hypot(projected.x - old.point.x, projected.y - old.point.y) < 0.75 * scale {
+                // Opposite-polarity Vision passes can describe the same physical border.
+                continue
             }
-            return result + [end.point]
+            if distance < (best?.distance ?? .infinity) {
+                otherDistance = min(otherDistance, best?.distance ?? .infinity)
+                best = (projected, distance, max(0, (alignment - 0.8) / 0.2) * endFade)
+            } else { otherDistance = min(otherDistance, distance) }
         }
-        func length(_ points: [CGPoint]) -> CGFloat {
-            zip([start.point] + points, points).reduce(0) { $0 + hypot($1.1.x - $1.0.x, $1.1.y - $1.0.y) }
-        }
-        let routes = [route(forward: true), route(forward: false)].compactMap { $0 }
-        // Don't take a distant detour around a U-shape when the user crosses its opening.
-        guard let chosen = routes.min(by: { length($0) < length($1) }), length(chosen) <= limit else { return [end.point] }
-        return chosen
+        guard let best else { return point }
+        let proximity = 1 - best.distance / radius
+        let confidence = min(1, max(0, (otherDistance - best.distance) / (2 * scale)))
+        let motionFade = min(1, travel / (0.5 * scale))
+        let weight = proximity * proximity * (3 - 2 * proximity) * best.alignment * confidence * motionFade
+        // Smooth falloff bounds correction to about one screen point, with no capture/release threshold.
+        return CGPoint(x: point.x + (best.point.x - point.x) * weight,
+                       y: point.y + (best.point.y - point.y) * weight)
     }
 
     static func detect(in image: CGImage) throws -> ContourMap {
@@ -166,20 +206,25 @@ struct PixelEdges: @unchecked Sendable {
               let data = image.dataProvider?.data, CFDataGetLength(data) >= image.bytesPerRow * image.height else { return nil }
         self.data = data; width = image.width; height = image.height; stride = image.bytesPerRow
     }
-    func candidates(to point: CGPoint, radius: CGFloat) -> [ContourMap.Hit] {
+    func candidates(to point: CGPoint, radius: CGFloat, previous: ContourMap.Hit? = nil,
+                    movement: CGPoint = .zero) -> [ContourMap.Hit] {
         guard point.x.isFinite, point.y.isFinite, radius.isFinite, radius > 0,
               width > 2, height > 2, let bytes = CFDataGetBytePtr(data) else { return [] }
-        let left = max(1, Int(floor(point.x - radius))), right = min(width - 2, Int(ceil(point.x + radius)))
-        let top = max(1, Int(floor(point.y - radius))), bottom = min(height - 2, Int(ceil(point.y + radius)))
+        let predicted = previous.flatMap { $0.contour < 0 ? CGPoint(x: $0.point.x + movement.x, y: $0.point.y + movement.y) : nil }
+        let reach = radius * (predicted == nil ? 1 : 2)
+        let left = max(1, Int(floor(point.x - reach))), right = min(width - 2, Int(ceil(point.x + reach)))
+        let top = max(1, Int(floor(point.y - reach))), bottom = min(height - 2, Int(ceil(point.y + reach)))
         guard left <= right, top <= bottom else { return [] }
-        // ponytail: cap the search grid at roughly 50×50 for zoomed-out huge images; local multiscale refinement if needed.
-        let step = max(1, Int(radius / 24))
+        // ponytail: bounded sampling (about 100×100 while held); local multiscale refinement if fine edges are missed.
+        let step = max(1, Int(ceil(radius / 24)))
         var scored: [(CGFloat, ContourMap.Hit)] = []
-        for y in Swift.stride(from: top, through: bottom, by: step) {
-            for x in Swift.stride(from: left, through: right, by: step) {
+        var held: (distance: CGFloat, hit: ContourMap.Hit)?
+        // Keep the grid anchored to the image as the pointer moves.
+        for y in Swift.stride(from: ((top + step - 1) / step) * step, through: bottom, by: step) {
+            for x in Swift.stride(from: ((left + step - 1) / step) * step, through: right, by: step) {
                 let dx = CGFloat(x) + 0.5 - point.x, dy = CGFloat(y) + 0.5 - point.y
                 let distance = hypot(dx, dy)
-                guard distance <= radius else { continue }
+                guard distance <= reach else { continue }
                 var contrast = 0
                 for channel in 0..<4 {
                     let horizontal = abs(Int(bytes[y * stride + (x + 1) * 4 + channel]) - Int(bytes[y * stride + (x - 1) * 4 + channel]))
@@ -189,11 +234,16 @@ struct PixelEdges: @unchecked Sendable {
                 guard contrast >= 24 else { continue }
                 let hit = ContourMap.Hit(point: CGPoint(x: CGFloat(x) + 0.5, y: CGFloat(y) + 0.5), contour: -1,
                                          segment: y * width + x, t: 0, distance: distance)
-                scored.append((distance / radius - CGFloat(contrast) / 255 * 0.2, hit))
+                if distance <= radius { scored.append((distance / radius - CGFloat(contrast) / 255 * 0.2, hit)) }
+                if let predicted {
+                    let residual = hypot(hit.point.x - predicted.x, hit.point.y - predicted.y)
+                    // ponytail: local prediction tracks simple pixel borders; complex junctions need contour topology.
+                    if residual <= max(2, CGFloat(step) * 1.5), residual < (held?.distance ?? .infinity) { held = (residual, hit) }
+                }
             }
         }
         scored.sort { $0.0 == $1.0 ? $0.1.segment < $1.1.segment : $0.0 < $1.0 }
-        var result: [ContourMap.Hit] = []
+        var result: [ContourMap.Hit] = held.map { [$0.hit] } ?? []
         for (_, hit) in scored {
             if result.allSatisfy({ hypot($0.point.x - hit.point.x, $0.point.y - hit.point.y) >= max(2, radius * 0.45) }) {
                 result.append(hit)
