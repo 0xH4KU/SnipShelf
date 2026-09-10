@@ -17,6 +17,7 @@ final class ShelfPanel: NSPanel {
 
 @MainActor @Observable
 final class ShelfWindow: NSObject, NSWindowDelegate {
+    static let tabSize = CGSize(width: 24, height: 88)
     var collapsed = false
     var edge = "right"
     var snapEdge: String?
@@ -29,6 +30,7 @@ final class ShelfWindow: NSObject, NSWindowDelegate {
     private var dragStart = CGPoint.zero
     private var frameStart = CGRect.zero
     private var moving = false
+    private var pullingFromEdge = false
     private let defaults: UserDefaults
     init(defaults: UserDefaults = .standard) { self.defaults = defaults; super.init() }
 
@@ -68,12 +70,12 @@ final class ShelfWindow: NSObject, NSWindowDelegate {
             ?? panel.screen ?? NSScreen.main ?? NSScreen.screens[0]
     }
     private func applySizing() {
-        panel.minSize = collapsed ? CGSize(width: 24, height: 88) : CGSize(width: 300, height: 280)
+        panel.minSize = collapsed ? Self.tabSize : CGSize(width: 300, height: 280)
         if collapsed { panel.styleMask.remove(.resizable) } else { panel.styleMask.insert(.resizable) }
     }
     private func dockedFrame(collapsed: Bool) -> CGRect {
         let visible = screen.visibleFrame
-        let size = collapsed ? CGSize(width: 24, height: 88) : expandedSize
+        let size = collapsed ? Self.tabSize : expandedSize
         return CGRect(x: edge == "left" ? visible.minX : visible.maxX - size.width,
                       y: min(visible.maxY - size.height, max(visible.minY, panel.frame.midY - size.height / 2)),
                       width: min(size.width, visible.width), height: min(size.height, visible.height))
@@ -114,9 +116,13 @@ final class ShelfWindow: NSObject, NSWindowDelegate {
         }
     }
     func beginMove(at point: CGPoint) {
+        let wasAnimating = timer != nil
         timer?.invalidate(); timer = nil
-        if !collapsed { panel.setFrame(CGRect(origin: panel.frame.origin, size: expandedSize), display: true); applySizing() }
+        if !collapsed && !wasAnimating { expandedSize = panel.frame.size }
+        if !collapsed && wasAnimating { panel.setFrame(CGRect(origin: panel.frame.origin, size: expandedSize), display: true); applySizing() }
         moving = true
+        pullingFromEdge = false
+        snapEdge = nil
         temporarilyExpanded = false
         dragStart = point; frameStart = panel.frame
     }
@@ -124,18 +130,32 @@ final class ShelfWindow: NSObject, NSWindowDelegate {
         let dx = p.x - dragStart.x, dy = p.y - dragStart.y
         if collapsed {
             let inward = edge == "left" ? dx > 16 : dx < -16
-            if inward { expand(); moving = false; return }
+            if inward {
+                collapsed = false; pullingFromEdge = true
+                let x = edge == "left" ? frameStart.minX + dx : frameStart.maxX + dx - expandedSize.width
+                let frame = CGRect(x: x, y: p.y - expandedSize.height + 14,
+                                   width: expandedSize.width, height: expandedSize.height)
+                panel.setFrame(frame, display: true); applySizing()
+                dragStart = p; frameStart = panel.frame
+                return
+            }
             let visible = screen.visibleFrame
-            panel.setFrameOrigin(CGPoint(x: panel.frame.minX, y: min(visible.maxY - 88, max(visible.minY, frameStart.minY + dy))))
+            panel.setFrameOrigin(CGPoint(x: panel.frame.minX, y: min(visible.maxY - Self.tabSize.height, max(visible.minY, frameStart.minY + dy))))
         } else if moving {
             panel.setFrameOrigin(CGPoint(x: frameStart.minX + dx, y: frameStart.minY + dy))
             let visible = screen.visibleFrame
             snapEdge = panel.frame.minX <= visible.minX + 30 ? "left" :
                 (panel.frame.maxX >= visible.maxX - 30 ? "right" : nil)
+            if pullingFromEdge {
+                let inset = edge == "left" ? panel.frame.minX - visible.minX : visible.maxX - panel.frame.maxX
+                if inset > 0 && snapEdge == edge { snapEdge = nil }
+                else { pullingFromEdge = false }
+            }
         }
     }
     func endMove(wasClick: Bool) {
         moving = false
+        if !collapsed { applySizing(); expandedSize = panel.frame.size }
         if collapsed && wasClick { expand() }
         else if let snapEdge { edge = snapEdge; self.snapEdge = nil; collapse() }
         else { recoverScreen(); persist() }
@@ -198,12 +218,18 @@ struct ShelfMoveHandle: NSViewRepresentable {
         override func mouseDown(with event: NSEvent) {
             start = window?.convertPoint(toScreen: event.locationInWindow) ?? event.locationInWindow
             shelf.beginMove(at: start)
+            // Keep tracking when expanding replaces the SwiftUI edge-tab handle.
+            guard let trackingWindow = window else { return }
+            while let next = trackingWindow.nextEvent(matching: [.leftMouseDragged, .leftMouseUp]) {
+                if next.type == .leftMouseUp { mouseUp(with: next); break }
+                shelf.move(to: trackingWindow.convertPoint(toScreen: next.locationInWindow))
+            }
         }
         override func mouseDragged(with event: NSEvent) {
             shelf.move(to: window?.convertPoint(toScreen: event.locationInWindow) ?? event.locationInWindow)
         }
         override func mouseUp(with event: NSEvent) {
-            let p = window?.convertPoint(toScreen: event.locationInWindow) ?? event.locationInWindow
+            let p = shelf.panel.convertPoint(toScreen: event.locationInWindow)
             shelf.endMove(wasClick: hypot(start.x - p.x, start.y - p.y) < 4)
         }
         override func accessibilityPerformPress() -> Bool { shelf.expand(); return true }

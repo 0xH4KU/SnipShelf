@@ -20,6 +20,11 @@ final class CanvasModel {
     var edgeMap: ContourMap?
     let pixelEdges: PixelEdges?
     var reviewImage: CGImage?
+    var showCutout = true
+    private(set) var reviewPoints: [CGPoint] = []
+    private(set) var reviewOrigin = CGPoint.zero
+    private(set) var previousOutline: [CGPoint]?
+    var restoreToken = 0
     var resumeToken = 0
     var reviewing: Bool { reviewImage != nil }
     var hasOutline: Bool { selecting || reviewing }
@@ -54,14 +59,29 @@ final class CanvasModel {
             }
         } onCancel: { task.cancel() }
     }
-    func reset() { reviewImage = nil; selecting = false; error = nil; resetToken += 1 }
+    func reset() {
+        if reviewing { previousOutline = reviewPoints }
+        reviewImage = nil; selecting = false; error = nil; resetToken += 1
+    }
     func prepareReview(points: [CGPoint]) throws {
         reviewImage = try ImageCore.crop(session.image, points: points)
+        reviewPoints = points
+        reviewOrigin = CGPoint(x: max(0, floor(points.map(\.x).min() ?? 0)),
+                               y: max(0, floor(points.map(\.y).min() ?? 0)))
         selecting = false
     }
     func continueSelection() {
         guard reviewing else { return }
+        // ponytail: one outline checkpoint; use UndoManager if multi-step editing is needed.
+        previousOutline = reviewPoints
         reviewImage = nil; selecting = true; resumeToken += 1
+    }
+    func undoSelection() {
+        guard let points = previousOutline else { return }
+        do {
+            try prepareReview(points: points)
+            previousOutline = nil; error = nil; restoreToken += 1
+        } catch { self.error = error.localizedDescription }
     }
     func confirm() {
         guard let image = reviewImage else { return }
@@ -78,89 +98,104 @@ struct CaptureView: View {
     @State private var showAssist = false
     var body: some View {
         GeometryReader { geometry in
-        ZStack(alignment: .top) {
-            SelectionCanvas(model: model)
-            VStack(spacing: 8) {
-                HStack(spacing: 12) {
-                    Image(systemName: "line.3.horizontal").foregroundStyle(.secondary)
-                        .frame(width: 24, height: 26).contentShape(Rectangle())
-                        .help("Drag to move the selection toolbar")
-                        .gesture(DragGesture().onChanged { value in
-                            let limitX = max(0, (geometry.size.width - 620) / 2)
-                            toolbarOffset = CGSize(width: min(limitX, max(-limitX, toolbarStart.width + value.translation.width)),
-                                                   height: min(max(0, geometry.size.height - 190), max(0, toolbarStart.height + value.translation.height)))
-                        }.onEnded { _ in toolbarStart = toolbarOffset })
-                    Picker("Selection", selection: $model.mode) {
-                        ForEach(CanvasModel.Mode.allCases, id: \.self) { Text($0.rawValue).tag($0) }
-                    }.pickerStyle(.segmented).labelsHidden().frame(width: 155).disabled(model.selecting)
-                    Button { showAssist.toggle() } label: {
-                        Image(systemName: model.snapEnabled ? "wand.and.stars" : "slider.horizontal.3")
-                    }.help("Lasso assistance · \(model.edgeStatus)").accessibilityLabel("Lasso assistance")
-                        .disabled(model.selecting)
-                        .popover(isPresented: $showAssist) {
-                            VStack(alignment: .leading, spacing: 16) {
-                                Text("Lasso assistance").font(.headline)
-                                Text(model.edgeStatus).font(.caption).foregroundStyle(.secondary)
-                                Toggle(model.mode == .lasso ? "Gentle edge help" : "Snap to edges", isOn: $model.snapEnabled)
-                                if model.mode == .polygon { VStack(alignment: .leading, spacing: 6) {
-                                    HStack { Text("Snap distance"); Spacer(); Text("\(Int(model.snapRadius)) pt").foregroundStyle(.secondary) }
-                                    Slider(value: $model.snapRadius, in: 4...24, step: 1).accessibilityLabel("Snap distance")
-                                }.disabled(!model.snapEnabled) }
-                                VStack(alignment: .leading, spacing: 6) {
-                                    HStack { Text("Steadiness"); Spacer(); Text(model.smoothing == 0 ? "Off" : "\(Int(model.smoothing * 100))%").foregroundStyle(.secondary) }
-                                    Slider(value: $model.smoothing, in: 0...1).accessibilityLabel("Steadiness")
-                                }
-                                Text(model.mode == .lasso
-                                     ? "Draw naturally. Edge help makes tiny adjustments without holding your line. Hold Option to bypass edge help."
-                                     : "Tab switches edges; hold Option to bypass snapping.")
-                                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                            }.padding(20).frame(width: 270)
+            GlassEffectContainer(spacing: 16) {
+                ZStack(alignment: .top) {
+                    SelectionCanvas(model: model)
+                    VStack(spacing: 10) {
+                        HStack(spacing: 14) {
+                            Image(systemName: "line.3.horizontal").foregroundStyle(.secondary)
+                                .frame(width: 24, height: 28).contentShape(Rectangle())
+                                .accessibilityLabel("Move selection toolbar")
+                                .help("Drag to move the toolbar")
+                                .gesture(DragGesture().onChanged { value in
+                                    let limitX = max(0, (geometry.size.width - 600) / 2)
+                                    toolbarOffset = CGSize(width: min(limitX, max(-limitX, toolbarStart.width + value.translation.width)),
+                                                           height: min(max(0, geometry.size.height - 200), max(0, toolbarStart.height + value.translation.height)))
+                                }.onEnded { _ in toolbarStart = toolbarOffset })
+                            if model.reviewing {
+                                Picker("Review", selection: $model.showCutout) {
+                                    Text("Original").tag(false)
+                                    Text("Cutout").tag(true)
+                                }.pickerStyle(.segmented).labelsHidden().frame(width: 160)
+                            } else {
+                                Picker("Selection", selection: $model.mode) {
+                                    ForEach(CanvasModel.Mode.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+                                }.pickerStyle(.segmented).labelsHidden().frame(width: 160).disabled(model.selecting)
+                            }
+                            Button { showAssist.toggle() } label: { Image(systemName: "wand.and.stars") }
+                                .help("Selection assistance").accessibilityLabel("Selection assistance")
+                                .disabled(model.selecting).popover(isPresented: $showAssist) { assistance }
+                            Divider().frame(height: 18)
+                            Button("Fit") { model.fit() }.help("Fit image").disabled(model.selecting)
+                            Button("100%") { model.actualSize = true; model.scale = 1; model.offset = .zero }.disabled(model.selecting)
+                            Button { model.scale = max(0.1, model.scale / 1.25) } label: { Image(systemName: "minus.magnifyingglass") }
+                                .help("Zoom out").accessibilityLabel("Zoom out").disabled(model.selecting)
+                            Button { model.scale = min(16, model.scale * 1.25) } label: { Image(systemName: "plus.magnifyingglass") }
+                                .help("Zoom in").accessibilityLabel("Zoom in").disabled(model.selecting)
+                            Divider().frame(height: 18)
+                            Button { model.undoSelection() } label: { Image(systemName: "arrow.uturn.backward") }
+                                .help("Undo last refinement (⌘Z)").accessibilityLabel("Undo last refinement")
+                                .disabled(model.previousOutline == nil).keyboardShortcut("z", modifiers: .command)
+                            Button { model.cancel() } label: { Image(systemName: "xmark") }
+                                .help("Cancel (Esc)").accessibilityLabel("Cancel capture").keyboardShortcut(.cancelAction)
+                        }.buttonStyle(.borderless).controlSize(.regular)
+                            .padding(.horizontal, 16).padding(.vertical, 12)
+                            .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 18))
+                        Text(hint)
+                            .font(.callout).foregroundStyle(model.error == nil ? Color.secondary : Color.primary)
+                            .padding(.horizontal, 14).padding(.vertical, 7)
+                            .background(.regularMaterial, in: Capsule()).allowsHitTesting(false)
+                    }.padding(.top, 18).offset(toolbarOffset)
+                    VStack {
+                        Spacer()
+                        if model.reviewing {
+                            HStack(spacing: 12) {
+                                Button("Redraw", systemImage: "arrow.counterclockwise") { model.reset() }
+                                    .help("Start again · ⌘Z restores this outline")
+                                Button("Refine", systemImage: "pencil.tip") { model.continueSelection() }
+                                    .help("Drag from the outline to retrace · ⌘Z restores the previous outline")
+                                Divider().frame(height: 22)
+                                Button("Keep Clip", systemImage: "checkmark") { model.confirm() }
+                                    .buttonStyle(.glassProminent).keyboardShortcut(.defaultAction)
+                                    .help("Save this cutout to the shelf (Return)")
+                            }.buttonStyle(.bordered).controlSize(.large)
+                                .padding(12).glassEffect(.regular, in: RoundedRectangle(cornerRadius: 22))
+                        } else if model.hasOutline {
+                            Button("Redraw", systemImage: "arrow.counterclockwise") { model.reset() }
+                                .buttonStyle(.glass).controlSize(.large)
                         }
-                    Group {
-                        Button("Fit") { model.fit() }.disabled(model.selecting).help("Fit image · scroll to pan · pinch to zoom")
-                        Button("100%") { model.actualSize = true; model.scale = 1; model.offset = .zero }.disabled(model.selecting)
-                        Button { model.scale = max(0.1, model.scale / 1.25) } label: { Image(systemName: "minus.magnifyingglass") }
-                            .help("Zoom out").disabled(model.selecting)
-                        Button { model.scale = min(16, model.scale * 1.25) } label: { Image(systemName: "plus.magnifyingglass") }
-                            .help("Zoom in").disabled(model.selecting)
-                    }
-                    Divider().frame(height: 18)
-                    Button("Reset") { model.reset() }.disabled(!model.hasOutline && model.error == nil)
-                    Button { model.cancel() } label: { Image(systemName: "xmark") }.help("Cancel (Esc)").keyboardShortcut(.cancelAction)
-                }.buttonStyle(.borderless).padding(.horizontal, 16).padding(.vertical, 12)
-                    .glassEffect(.regular, in: Capsule())
-                Text(model.error ?? (model.mode == .lasso ? "Draw freely · release to review · ⌥ bypasses edge help" : "Click points · Return to review · Delete to undo"))
-                    .font(.system(size: 12, weight: .medium)).padding(.horizontal, 14).padding(.vertical, 7)
-                    .glassEffect(.regular, in: Capsule())
-                    .allowsHitTesting(false)
-            }.padding(.top, 18).offset(toolbarOffset)
-            if model.reviewing {
-                VStack {
-                    Spacer()
-                    HStack(spacing: 12) {
-                        reviewButton("Delete", icon: "trash", color: .red) { model.reset() }
-                            .help("Discard this selection and start again")
-                        reviewButton("Continue", icon: "pencil.tip", color: .yellow) { model.continueSelection() }
-                            .help("Keep the path. Drag from its outline to retrace, or extend from its end")
-                        reviewButton("Confirm", icon: "checkmark", color: .green) { model.confirm() }
-                            .keyboardShortcut(.defaultAction).help("Add this clip to the shelf")
-                    }.padding(12).glassEffect(.regular, in: Capsule())
-                    Text("Nothing is added to the shelf until you confirm.")
-                        .font(.caption).padding(.horizontal, 12).padding(.vertical, 6)
-                        .background(.regularMaterial, in: Capsule())
-                }.padding(.bottom, 22)
+                    }.padding(.bottom, 22)
+                }
             }
-        }
         }.task { await model.analyzeEdges() }
     }
-    private func reviewButton(_ title: String, icon: String, color: Color, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            HStack(spacing: 7) {
-                Image(systemName: icon).font(.system(size: 12, weight: .bold))
-                    .foregroundStyle(.black.opacity(0.8)).frame(width: 27, height: 27).background(color, in: Circle())
-                Text(title).font(.system(size: 13, weight: .semibold))
-            }.padding(.horizontal, 10).padding(.vertical, 4)
-        }.buttonStyle(.plain).accessibilityLabel(title + " selection")
+    private var hint: String {
+        if let error = model.error { return error }
+        if model.reviewing { return "Compare the cutout · Refine the edge · Return to keep" }
+        if model.previousOutline != nil && model.selecting { return "Retrace or redraw · ⌘Z restores the previous outline" }
+        return model.mode == .lasso ? "Draw around an element · Release to review · ⌥ bypasses edge help" : "Click to add points · Return to review · Delete to undo"
+    }
+    private var assistance: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("Selection Assistance").font(.headline)
+            Text(model.edgeStatus).font(.caption).foregroundStyle(.secondary)
+            Picker("Tool", selection: $model.mode) {
+                ForEach(CanvasModel.Mode.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+            }.pickerStyle(.segmented)
+            Toggle(model.mode == .lasso ? "Gentle edge help" : "Snap to edges", isOn: $model.snapEnabled)
+            if model.mode == .polygon {
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack { Text("Snap distance"); Spacer(); Text("\(Int(model.snapRadius)) pt").foregroundStyle(.secondary) }
+                    Slider(value: $model.snapRadius, in: 4...24, step: 1).accessibilityLabel("Snap distance")
+                }.disabled(!model.snapEnabled)
+            }
+            VStack(alignment: .leading, spacing: 6) {
+                HStack { Text("Steadiness"); Spacer(); Text(model.smoothing == 0 ? "Off" : "\(Int(model.smoothing * 100))%").foregroundStyle(.secondary) }
+                Slider(value: $model.smoothing, in: 0...1).accessibilityLabel("Steadiness")
+            }
+            Text(model.mode == .lasso ? "Hold Option to bypass edge help. Steadiness stays on." : "Tab switches nearby edges. Option bypasses snapping.")
+                .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+        }.padding(20).frame(width: 270)
     }
 }
 
@@ -168,7 +203,7 @@ struct SelectionCanvas: NSViewRepresentable {
     var model: CanvasModel
     func makeNSView(context: Context) -> CanvasNSView { CanvasNSView(model: model) }
     func updateNSView(_ view: CanvasNSView, context: Context) {
-        _ = model.scale; _ = model.offset; _ = model.actualSize; _ = model.mode; _ = model.resetToken; _ = model.edgeMap; _ = model.reviewImage; _ = model.resumeToken
+        _ = model.scale; _ = model.offset; _ = model.actualSize; _ = model.mode; _ = model.resetToken; _ = model.edgeMap; _ = model.reviewImage; _ = model.resumeToken; _ = model.restoreToken; _ = model.showCutout
         view.refresh()
     }
 }
@@ -187,6 +222,9 @@ final class CanvasNSView: NSView {
     private var optionDown = false
     private var strokeBounds = CGRect.null
     private var seenResume = 0
+    private var seenRestore = 0
+    private var reviewPicture: NSImage?
+    private var displayedReview: CGImage?
     private var continuing = false
     private var draggingLasso = false
     private var alternatives: [ContourMap.Hit] = []
@@ -198,10 +236,11 @@ final class CanvasNSView: NSView {
         self.model = model
         displayImage = NSImage(cgImage: model.session.image, size: .zero)
         super.init(frame: .zero)
+        if model.reviewing { points = model.reviewPoints }
         setAccessibilityElement(true)
         setAccessibilityRole(.image)
         setAccessibilityLabel("Image selection canvas")
-        setAccessibilityHelp("Choose Lasso and draw freely, or Polygon and click points. Release or press Return to review. Tab switches polygon edges. Confirm saves; Continue retraces; Delete discards the current selection. Escape cancels.")
+        setAccessibilityHelp("Choose Lasso and draw freely, or Polygon and click points. Release or press Return to review. Compare Original and Cutout. Keep Clip saves; Refine retraces; Redraw clears the outline. Command-Z restores the previous outline. Escape cancels.")
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
     override func viewDidMoveToWindow() { super.viewDidMoveToWindow(); window?.makeFirstResponder(self) }
@@ -221,6 +260,16 @@ final class CanvasNSView: NSView {
             window?.makeFirstResponder(self)
         }
         if seenReset != model.resetToken { points.removeAll(); lastPointer = nil; alternatives = []; continuing = false; draggingLasso = false; hover = nil; previousHit = nil; snappedPoint = nil; stabilizer.reset(); seenReset = model.resetToken }
+        if seenRestore != model.restoreToken {
+            seenRestore = model.restoreToken; points = model.reviewPoints
+            continuing = false; draggingLasso = false; hover = nil
+            previousHit = nil; snappedPoint = nil; alternatives = []; lastPointer = nil; stabilizer.reset()
+            window?.makeFirstResponder(self)
+        }
+        if displayedReview !== model.reviewImage {
+            displayedReview = model.reviewImage
+            reviewPicture = model.reviewImage.map { NSImage(cgImage: $0, size: .zero) }
+        }
         needsDisplay = true
     }
     var imageRect: CGRect {
@@ -242,6 +291,29 @@ final class CanvasNSView: NSView {
                        y: min(CGFloat(model.session.image.height), max(0, p.y)))
     }
     override func draw(_ dirtyRect: NSRect) {
+        if model.reviewing, model.showCutout, let image = model.reviewImage {
+            // Keep the cutout registered with the original while comparing and zooming.
+            let p = canvasPoint(model.reviewOrigin)
+            let rect = CGRect(x: p.x, y: p.y, width: CGFloat(image.width) / pixelsPerPoint,
+                              height: CGFloat(image.height) / pixelsPerPoint)
+            NSColor.windowBackgroundColor.setFill(); bounds.fill()
+            NSGraphicsContext.saveGraphicsState()
+            NSBezierPath(rect: bounds).addClip()
+            NSColor(calibratedWhite: 0.94, alpha: 1).setFill(); rect.fill()
+            NSColor(calibratedWhite: 0.88, alpha: 1).setFill()
+            let visible = rect.intersection(bounds)
+            if !visible.isNull {
+                for y in stride(from: floor(visible.minY / 10) * 10, through: visible.maxY, by: 10) {
+                    for x in stride(from: floor(visible.minX / 10) * 10, through: visible.maxX, by: 10) where (Int(x / 10) + Int(y / 10)) % 2 == 0 {
+                        CGRect(x: x, y: y, width: 10, height: 10).intersection(rect).fill()
+                    }
+                }
+            }
+            reviewPicture?.draw(in: rect, from: .zero, operation: .sourceOver, fraction: 1,
+                                respectFlipped: true, hints: [.interpolation: NSImageInterpolation.high])
+            NSGraphicsContext.restoreGraphicsState()
+            return
+        }
         NSColor(calibratedWhite: 0.12, alpha: 1).setFill(); bounds.fill()
         if !model.isScreen {
             let square: CGFloat = 16
@@ -408,6 +480,9 @@ final class CanvasNSView: NSView {
         }
     }
     override func keyDown(with event: NSEvent) {
+        if event.modifierFlags.contains(.command), event.charactersIgnoringModifiers?.lowercased() == "z" {
+            model.undoSelection(); refresh(); return
+        }
         switch event.keyCode {
         case 53: model.cancel()
         case 36, 76:
@@ -426,6 +501,12 @@ final class CanvasNSView: NSView {
             if !points.isEmpty { points.removeLast(); model.selecting = !points.isEmpty; needsDisplay = true }
         default: super.keyDown(with: event)
         }
+    }
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        if event.modifierFlags.contains(.command), event.charactersIgnoringModifiers?.lowercased() == "z" {
+            model.undoSelection(); refresh(); return true
+        }
+        return super.performKeyEquivalent(with: event)
     }
     override func scrollWheel(with event: NSEvent) {
         guard !model.selecting else { return }

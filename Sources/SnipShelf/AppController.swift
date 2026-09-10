@@ -18,15 +18,15 @@ struct SnipShelfMain {
 }
 
 @MainActor @Observable
-final class AppController: NSObject, NSApplicationDelegate {
+final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
     let store: ShelfStore
     let shelf: ShelfWindow
     let defaults: UserDefaults
     var busy = false
+    var isDraggingClips = false
     var backdrop: Int { didSet { defaults.set(backdrop, forKey: "backdrop") } }
     var shortcutLabel: String
-    var previewClip: Clip?
-    var cropAfterPreview: Clip?
+    var previewClip: Clip? { didSet { updatePreview() } }
     var status: String?
     @ObservationIgnored private var statusItem: NSStatusItem!
     @ObservationIgnored private var hotKey: EventHotKeyRef?
@@ -35,22 +35,61 @@ final class AppController: NSObject, NSApplicationDelegate {
     @ObservationIgnored private var captureModel: CanvasModel?
     @ObservationIgnored private var settingsWindow: NSWindow?
     @ObservationIgnored private var aboutWindow: NSWindow?
+    @ObservationIgnored private var previewWindow: ShelfPanel?
     @ObservationIgnored private var previousApp: NSRunningApplication?
     @ObservationIgnored private var lastExternalApp: NSRunningApplication?
     @ObservationIgnored private var terminationSignal: DispatchSourceSignal?
 
-    override init() {
+    init(store: ShelfStore? = nil, preferences: UserDefaults? = nil) {
         let args = ProcessInfo.processInfo.arguments
         var qaRoot: URL?
         if let index = args.firstIndex(of: "--qa-directory"), args.count > index + 1 {
             qaRoot = URL(fileURLWithPath: args[index + 1], isDirectory: true)
         }
-        defaults = qaRoot == nil ? .standard : UserDefaults(suiteName: "org.snipshelf.app.qa")!
-        store = ShelfStore(root: qaRoot)
+        defaults = preferences ?? (qaRoot == nil ? .standard : UserDefaults(suiteName: "org.snipshelf.app.qa")!)
+        self.store = store ?? ShelfStore(root: qaRoot)
         shelf = ShelfWindow(defaults: defaults)
         backdrop = defaults.integer(forKey: "backdrop")
         shortcutLabel = defaults.string(forKey: "shortcutLabel") ?? "⌘⇧2"
         super.init()
+    }
+
+    static func menuBarIcon() -> NSImage {
+        let image = NSImage(size: NSSize(width: 18, height: 18), flipped: true) { _ in
+            guard let context = NSGraphicsContext.current?.cgContext else { return false }
+            context.saveGState()
+            defer { context.restoreGState() }
+            let paper = CGMutablePath()
+            paper.move(to: CGPoint(x: 8, y: 1.5))
+            paper.addCurve(to: CGPoint(x: 10.4, y: 3.2), control1: CGPoint(x: 9.3, y: 1.4), control2: CGPoint(x: 9.8, y: 1.8))
+            paper.addCurve(to: CGPoint(x: 13.1, y: 4.7), control1: CGPoint(x: 11, y: 4.5), control2: CGPoint(x: 11.8, y: 4.8))
+            paper.addCurve(to: CGPoint(x: 16.4, y: 6.8), control1: CGPoint(x: 14.8, y: 4.3), control2: CGPoint(x: 16.3, y: 5.2))
+            paper.addCurve(to: CGPoint(x: 15.4, y: 9.5), control1: CGPoint(x: 16.8, y: 7.8), control2: CGPoint(x: 16.2, y: 8.8))
+            paper.addCurve(to: CGPoint(x: 13.1, y: 14.2), control1: CGPoint(x: 14.4, y: 10.4), control2: CGPoint(x: 14.1, y: 12.7))
+            paper.addCurve(to: CGPoint(x: 9.7, y: 16.5), control1: CGPoint(x: 12.3, y: 15.7), control2: CGPoint(x: 11.4, y: 16.5))
+            paper.addCurve(to: CGPoint(x: 6.2, y: 14.8), control1: CGPoint(x: 8.1, y: 16.7), control2: CGPoint(x: 7.1, y: 16.2))
+            paper.addCurve(to: CGPoint(x: 4.4, y: 12), control1: CGPoint(x: 5.5, y: 14.1), control2: CGPoint(x: 5.7, y: 12.7))
+            paper.addCurve(to: CGPoint(x: 1.7, y: 9.8), control1: CGPoint(x: 3.5, y: 11.5), control2: CGPoint(x: 1.6, y: 11.3))
+            paper.addCurve(to: CGPoint(x: 3.4, y: 7.1), control1: CGPoint(x: 1.5, y: 8.4), control2: CGPoint(x: 2.1, y: 7.7))
+            paper.addCurve(to: CGPoint(x: 5.4, y: 5.8), control1: CGPoint(x: 4.4, y: 6.7), control2: CGPoint(x: 5.6, y: 6.8))
+            paper.addCurve(to: CGPoint(x: 5.5, y: 3.7), control1: CGPoint(x: 5.7, y: 5.1), control2: CGPoint(x: 5.1, y: 4.4))
+            paper.addCurve(to: CGPoint(x: 8, y: 1.5), control1: CGPoint(x: 5.7, y: 2.4), control2: CGPoint(x: 6.8, y: 1.5))
+            paper.closeSubpath()
+            context.setFillColor(CGColor(gray: 0, alpha: 1))
+            context.addPath(paper); context.fillPath()
+            // A transparent crease keeps the peeled corner legible in either appearance.
+            context.setBlendMode(.clear)
+            context.setLineWidth(1)
+            context.setLineCap(.round)
+            context.move(to: CGPoint(x: 15.1, y: 9.2))
+            context.addCurve(to: CGPoint(x: 12.3, y: 10.9), control1: CGPoint(x: 14.6, y: 10.3), control2: CGPoint(x: 12.8, y: 10))
+            context.addCurve(to: CGPoint(x: 12.1, y: 14), control1: CGPoint(x: 11.6, y: 11.8), control2: CGPoint(x: 12.4, y: 13))
+            context.strokePath()
+            return true
+        }
+        image.isTemplate = true
+        image.accessibilityDescription = "SnipShelf"
+        return image
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -61,7 +100,9 @@ final class AppController: NSObject, NSApplicationDelegate {
         terminationSignal = termination
         shelf.install(content: ShelfView(app: self), key: { [weak self] in self?.handleKey($0) ?? false })
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
-        statusItem.button?.image = NSImage(systemSymbolName: "lasso", accessibilityDescription: "SnipShelf")
+        statusItem.button?.image = Self.menuBarIcon()
+        statusItem.button?.setAccessibilityLabel("SnipShelf")
+        statusItem.button?.toolTip = "SnipShelf"
         let menu = NSMenu()
         menu.addItem(actionItem("Capture Element", action: #selector(captureAction)))
         menu.addItem(actionItem("Show Shelf", action: #selector(showAction)))
@@ -246,7 +287,7 @@ final class AppController: NSObject, NSApplicationDelegate {
         }
     }
     func acceptDrop(_ providers: [NSItemProvider]) -> Bool {
-        guard readyForNewImage() else { return false }
+        guard !isDraggingClips, readyForNewImage() else { return false }
         shelf.dropFinished()
         busy = true
         Task {
@@ -349,6 +390,53 @@ final class AppController: NSObject, NSApplicationDelegate {
         return true
     }
 
+    private func updatePreview() {
+        guard let clip = previewClip else { previewWindow?.orderOut(nil); return }
+        store.selection = clip.id
+        if previewWindow == nil {
+            let window = ShelfPanel(contentRect: CGRect(x: 0, y: 0, width: 720, height: 580),
+                                    styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
+            window.isReleasedWhenClosed = false
+            window.minSize = CGSize(width: 560, height: 420)
+            window.level = .floating
+            window.delegate = self
+            window.contentView = NSHostingView(rootView: PreviewView(app: self))
+            window.onKey = { [weak self] in self?.handlePreviewKey($0) ?? false }
+            window.center()
+            previewWindow = window
+        }
+        previewWindow?.title = clip.name
+        NSApp.activate(ignoringOtherApps: true)
+        previewWindow?.makeKeyAndOrderFront(nil)
+    }
+    func adjacentPreview(_ delta: Int) -> Clip? {
+        guard let clip = previewClip, let index = store.clips.firstIndex(where: { $0.id == clip.id }),
+              store.clips.indices.contains(index + delta) else { return nil }
+        return store.clips[index + delta]
+    }
+    func movePreview(_ delta: Int) {
+        if let clip = adjacentPreview(delta) { previewClip = clip }
+    }
+    func handlePreviewKey(_ event: NSEvent) -> Bool {
+        if event.modifierFlags.intersection([.command, .control, .option]).isEmpty {
+            switch event.keyCode {
+            case 49, 53: previewClip = nil
+            case 123: movePreview(-1)
+            case 124: movePreview(1)
+            default: return false
+            }
+            return true
+        }
+        if event.modifierFlags.contains(.command), event.charactersIgnoringModifiers?.lowercased() == "c" {
+            if let clip = previewClip { copy(clip) }
+            return true
+        }
+        return false
+    }
+    func windowWillClose(_ notification: Notification) {
+        if notification.object as? NSWindow === previewWindow { previewClip = nil }
+    }
+
     private func installHotKeyHandler() {
         var type = EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))
         InstallEventHandler(GetApplicationEventTarget(), { _, _, context in
@@ -382,7 +470,7 @@ final class AppController: NSObject, NSApplicationDelegate {
         defaults.set(label, forKey: "shortcutLabel"); shortcutLabel = label
     }
     func showSettings() {
-        if settingsWindow == nil { settingsWindow = utilityWindow(title: "SnipShelf Settings", size: CGSize(width: 430, height: 300), content: SettingsView(app: self)) }
+        if settingsWindow == nil { settingsWindow = utilityWindow(title: "SnipShelf Settings", size: CGSize(width: 460, height: 360), content: SettingsView(app: self)) }
         NSApp.activate(ignoringOtherApps: true); settingsWindow?.makeKeyAndOrderFront(nil)
     }
     func showAbout() {

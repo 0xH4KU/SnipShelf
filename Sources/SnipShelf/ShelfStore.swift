@@ -80,6 +80,7 @@ final class ShelfStore {
             throw error
         }
         latestID = clip.id
+        selection = clip.id
         Task { [weak self] in
             try? await Task.sleep(for: .seconds(2))
             if self?.latestID == clip.id { self?.latestID = nil }

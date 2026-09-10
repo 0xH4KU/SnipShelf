@@ -3,7 +3,6 @@
 .swiftpm/
 /dist/
 
-# Local archives, QA data, and legacy-path compatibility
+# Local archives and QA data
 /.local/
-/work
 .DS_Store

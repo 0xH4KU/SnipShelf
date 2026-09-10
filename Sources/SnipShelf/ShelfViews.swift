@@ -11,7 +11,7 @@ struct ShelfView: View {
         GlassEffectContainer(spacing: 12) {
             Group {
                 if app.shelf.collapsed { edgeTab }
-                else { expandedShelf }
+                else { dockingContent }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(reduceTransparency ? Color(nsColor: .windowBackgroundColor) : .clear,
@@ -19,17 +19,13 @@ struct ShelfView: View {
             .glassEffect(.regular, in: RoundedRectangle(cornerRadius: app.shelf.collapsed ? 12 : 24))
             .overlay {
                 RoundedRectangle(cornerRadius: app.shelf.collapsed ? 12 : 24)
-                    .strokeBorder(app.shelf.snapEdge != nil || app.shelf.dropTargeted ? Color.accentColor.opacity(0.8) : Color.white.opacity(0.12),
-                                  lineWidth: app.shelf.snapEdge != nil || app.shelf.dropTargeted ? 2 : 0.5)
+                    .strokeBorder(app.shelf.dropTargeted ? Color.accentColor.opacity(0.8) : Color.primary.opacity(0.08),
+                                  lineWidth: app.shelf.dropTargeted ? 2 : 0.5)
                     .allowsHitTesting(false)
             }
             .padding(app.shelf.collapsed ? 1 : 5)
         }
-        .onDrop(of: [UTType.fileURL.identifier, UTType.png.identifier, UTType.tiff.identifier, UTType.image.identifier],
-                isTargeted: Binding(get: { app.shelf.dropTargeted }, set: { app.shelf.dropTargeted = $0; app.shelf.dropHover($0) })) { app.acceptDrop($0) }
-        .sheet(item: $app.previewClip, onDismiss: {
-            if let clip = app.cropAfterPreview { app.cropAfterPreview = nil; app.recrop(clip) }
-        }) { clip in PreviewView(app: app, clip: clip) }
+        .onDrop(of: ShelfDropDelegate.types, delegate: ShelfDropDelegate(app: app))
         .alert("SnipShelf", isPresented: Binding(get: { store.message != nil }, set: { if !$0 { store.message = nil } })) {
             if store.pendingImage != nil {
                 Button("Retry Save") { store.retryPending() }
@@ -42,16 +38,40 @@ struct ShelfView: View {
 
     private var edgeTab: some View {
         VStack(spacing: 9) {
-            Image(systemName: app.shelf.edge == "right" ? "chevron.left" : "chevron.right")
+            Image(systemName: store.latestID != nil ? "checkmark" : (app.shelf.edge == "right" ? "chevron.left" : "chevron.right"))
                 .font(.system(size: 13, weight: .semibold))
-            Text(store.clips.count > 99 ? "99+" : "\(store.clips.count)")
-                .font(.system(size: 9, weight: .semibold, design: .rounded)).monospacedDigit()
-            Circle().fill(store.latestID == nil ? Color.secondary.opacity(0.25) : Color.accentColor)
-                .frame(width: 4, height: 4)
+                .foregroundStyle(store.latestID != nil ? Color.accentColor : Color.primary)
+            if store.latestID != nil {
+                Text("Saved").font(.caption2.weight(.medium)).rotationEffect(.degrees(-90))
+                    .fixedSize().frame(width: 18, height: 36)
+            } else {
+                Text(store.clips.count > 99 ? "99+" : "\(store.clips.count)")
+                    .font(.system(size: 10, weight: .medium)).monospacedDigit()
+            }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .overlay { ShelfMoveHandle(shelf: app.shelf) }
-        .help("\(store.clips.count) clips · Click or pull inward to open")
+        .help(store.latestID != nil ? "Clip saved · Pull inward to use it" : "\(store.clips.count) clips · Click or pull inward to open")
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(store.latestID != nil ? "Clip saved" : "Shelf, \(store.clips.count) clips")
+    }
+    private var dockingContent: some View {
+        ZStack {
+            // Keep the collection mounted so pulling away preserves selection and scroll position.
+            expandedShelf
+                .opacity(app.shelf.snapEdge == nil ? 1 : 0)
+                .allowsHitTesting(app.shelf.snapEdge == nil)
+                .accessibilityHidden(app.shelf.snapEdge != nil)
+            if let edge = app.shelf.snapEdge {
+                Image(systemName: edge == "left" ? "chevron.right" : "chevron.left")
+                    .font(.system(size: 52, weight: .semibold)).foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: edge == "left" ? .trailing : .leading)
+                    .padding(.horizontal, 26)
+                    .allowsHitTesting(false)
+                    .accessibilityLabel("Release to tuck shelf to the \(edge) edge")
+            }
+        }
+        .animation(reduceMotion ? nil : .easeInOut(duration: 0.15), value: app.shelf.snapEdge)
     }
     private var expandedShelf: some View {
         VStack(spacing: 0) {
@@ -72,36 +92,35 @@ struct ShelfView: View {
         }
     }
     private var header: some View {
-        VStack(spacing: 9) {
+        VStack(spacing: 8) {
             ZStack {
-                Capsule().fill(.secondary.opacity(0.25)).frame(width: 30, height: 4)
+                Capsule().fill(.secondary.opacity(0.3)).frame(width: 28, height: 4)
                 ShelfMoveHandle(shelf: app.shelf)
-            }.frame(height: 16)
-            HStack(spacing: 8) {
-                VStack(alignment: .leading, spacing: 1) {
-                    Text("SnipShelf").font(.system(size: 15, weight: .semibold))
-                    Text(app.shelf.snapEdge.map { "Release to tuck \($0)" } ?? "A little space for your ideas")
-                        .font(.system(size: 10)).foregroundStyle(.secondary).lineLimit(1)
-                }
+            }.frame(height: 18)
+            HStack(spacing: 10) {
+                Text("SnipShelf").font(.headline)
                 Spacer(minLength: 4)
                 Button { app.capture() } label: { Image(systemName: "lasso").frame(width: 24, height: 24) }
-                    .buttonStyle(.glassProminent).help("Capture element (\(app.shortcutLabel))").accessibilityLabel("Capture element").disabled(app.busy)
-                Button { app.chooseImages() } label: { Image(systemName: "plus").frame(width: 20, height: 24) }
-                    .buttonStyle(.borderless).help("Import images").accessibilityLabel("Import images").disabled(app.busy)
-                Button { app.shelf.collapse() } label: { Image(systemName: "sidebar.right").frame(width: 20, height: 24) }
-                    .buttonStyle(.borderless).help("Tuck shelf to edge").accessibilityLabel("Collapse shelf")
-            }.padding(.horizontal, 15).padding(.bottom, 13)
+                    .buttonStyle(.borderedProminent).help("Capture element (\(app.shortcutLabel))")
+                    .accessibilityLabel("Capture element").disabled(app.busy)
+                Button { app.chooseImages() } label: { Image(systemName: "plus").frame(width: 24, height: 24) }
+                    .help("Import images (⌘O)").accessibilityLabel("Import images").disabled(app.busy)
+                Button { app.shelf.collapse() } label: {
+                    Image(systemName: app.shelf.edge == "left" ? "sidebar.left" : "sidebar.right").frame(width: 24, height: 24)
+                }.help("Tuck shelf to edge").accessibilityLabel("Collapse shelf")
+            }.buttonStyle(.borderless).padding(.horizontal, 16).padding(.bottom, 12)
         }
     }
     private var emptyState: some View {
-        VStack(spacing: 13) {
-            Image(systemName: "square.on.square.dashed").font(.system(size: 37, weight: .ultraLight))
-                .foregroundStyle(.secondary).padding(.bottom, 3)
-            Text("Keep the part you love.").font(.system(size: 16, weight: .medium))
-            Text("Circle an element on your screen,\nor drop an image here.")
-                .font(.system(size: 12)).foregroundStyle(.secondary).multilineTextAlignment(.center).lineSpacing(4)
-            Button("Capture an element") { app.capture() }.buttonStyle(.glass).padding(.top, 5).disabled(app.busy)
-            Text(app.shortcutLabel).font(.system(size: 11, design: .monospaced)).foregroundStyle(.tertiary)
+        VStack(spacing: 12) {
+            Image(systemName: "square.on.square.dashed").font(.system(size: 36, weight: .light))
+                .foregroundStyle(.secondary).padding(.bottom, 4)
+            Text("Your Shelf").font(.title3.weight(.semibold))
+            Text("Capture an element, or drop an image\nhere to keep it within reach.")
+                .font(.callout).foregroundStyle(.secondary).multilineTextAlignment(.center)
+            Button("Capture", systemImage: "lasso") { app.capture() }
+                .buttonStyle(.borderedProminent).padding(.top, 4).disabled(app.busy)
+            Text(app.shortcutLabel).font(.caption).foregroundStyle(.secondary)
         }.frame(maxWidth: .infinity, maxHeight: .infinity).padding(20)
     }
     private var grid: some View {
@@ -111,9 +130,13 @@ struct ShelfView: View {
     private var footer: some View {
         HStack(spacing: 9) {
             if app.busy { ProgressView().controlSize(.mini) }
-            Text(app.status ?? (store.selectedIDs.isEmpty ? "\(store.clips.count) clips" : "\(store.selectedIDs.count) selected"))
+            Text(app.status ?? (store.latestID != nil ? "Clip saved" : nil) ?? (store.selectedIDs.isEmpty ? "\(store.clips.count) clips" : "\(store.selectedIDs.count) selected"))
                 .font(.system(size: 11)).foregroundStyle(.secondary).monospacedDigit()
             Spacer()
+            if let clip = store.selectedClip {
+                Button { app.copy(clip) } label: { Image(systemName: "doc.on.doc").frame(width: 22, height: 22) }
+                    .help("Copy image (⌘C)").accessibilityLabel("Copy image")
+            }
             if !store.selectedIDs.isEmpty {
                 Button { store.delete(store.selectedIDs) } label: { Image(systemName: "trash") }
                     .help("Delete selected clips").accessibilityLabel("Delete selected clips")
@@ -123,10 +146,6 @@ struct ShelfView: View {
                     .help("Undo deletion (⌘Z)").accessibilityLabel("Undo deletion")
             }
             Menu {
-                Picker("Image background", selection: $app.backdrop) {
-                    Text("Checkerboard").tag(0); Text("Light").tag(1); Text("Dark").tag(2)
-                }
-                Divider()
                 Button("Paste Image") { app.paste() }
                 Button("Clear Shelf…", role: .destructive) { app.clearShelf() }.disabled(store.clips.isEmpty)
                 Divider()
@@ -136,6 +155,23 @@ struct ShelfView: View {
             } label: { Image(systemName: "ellipsis").frame(width: 18, height: 16) }
                 .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize().help("Shelf options").accessibilityLabel("Shelf options")
         }.buttonStyle(.borderless).padding(.horizontal, 17).padding(.vertical, 12)
+    }
+}
+
+struct ShelfDropDelegate: DropDelegate {
+    static let types = [UTType.fileURL.identifier, UTType.png.identifier, UTType.tiff.identifier, UTType.image.identifier]
+    let app: AppController
+    func validateDrop(info: DropInfo) -> Bool { !app.isDraggingClips }
+    func dropEntered(info: DropInfo) {
+        guard !app.isDraggingClips else { return }
+        app.shelf.dropTargeted = true; app.shelf.dropHover(true)
+    }
+    func dropExited(info: DropInfo) {
+        app.shelf.dropTargeted = false; app.shelf.dropHover(false)
+    }
+    func performDrop(info: DropInfo) -> Bool {
+        app.shelf.dropTargeted = false
+        return app.acceptDrop(info.itemProviders(for: Self.types))
     }
 }
 
@@ -157,71 +193,32 @@ struct ImageBackdrop: View {
     }
 }
 
-struct PreviewView: View {
-    @Bindable var app: AppController
-    let clip: Clip
-    @State private var image: NSImage?
-    @State private var failure: String?
-    var body: some View {
-        VStack(spacing: 14) {
-            HStack {
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(clip.name).font(.headline).lineLimit(1)
-                    Text("\(clip.width) × \(clip.height) · PNG").font(.caption).foregroundStyle(.secondary)
-                }
-                Spacer()
-                Button { app.previewClip = nil } label: { Image(systemName: "xmark") }.buttonStyle(.borderless).help("Close preview (Esc)").keyboardShortcut(.cancelAction)
-            }
-            ZStack {
-                ImageBackdrop(style: app.backdrop)
-                if let image { Image(nsImage: image).resizable().scaledToFit().padding(20) }
-                else if let failure { Text(failure).foregroundStyle(.secondary).padding() }
-                else { ProgressView() }
-            }.clipShape(RoundedRectangle(cornerRadius: 16))
-            HStack {
-                Picker("Background", selection: $app.backdrop) {
-                    Text("Checker").tag(0); Text("Light").tag(1); Text("Dark").tag(2)
-                }.pickerStyle(.segmented).frame(width: 190)
-                Spacer()
-                Button("Crop a Copy") { app.cropAfterPreview = clip; app.previewClip = nil }
-                Button("Export…") { app.export(clip) }
-                Button("Copy") { app.copy(clip) }.buttonStyle(.glassProminent).keyboardShortcut("c", modifiers: .command)
-            }.buttonStyle(.glass)
-        }.padding(20).frame(width: 610, height: 500)
-        .task {
-            let url = app.store.url(for: clip)
-            do {
-                let cg = try await Task.detached { try ImageCore.load(url) }.value
-                image = NSImage(cgImage: cg, size: NSSize(width: cg.width, height: cg.height))
-            } catch { failure = error.localizedDescription }
-        }
-    }
-}
-
 struct SettingsView: View {
     @Bindable var app: AppController
     var body: some View {
-        VStack(alignment: .leading, spacing: 22) {
-            Text("Make it yours.").font(.system(size: 23, weight: .semibold))
-            HStack {
-                VStack(alignment: .leading, spacing: 5) {
-                    Text("Capture shortcut").font(.headline)
-                    Text("Click to record. Include ⌘ or ⌃.").font(.caption).foregroundStyle(.secondary)
+        Form {
+            Section("Capture") {
+                HStack {
+                    Text("Keyboard shortcut")
+                    Spacer()
+                    ShortcutRecorder(app: app).frame(width: 145, height: 32)
                 }
-                Spacer()
-                ShortcutRecorder(app: app).frame(width: 145, height: 34)
+                Text("Click the shortcut to record. Include Command or Control.")
+                    .font(.caption).foregroundStyle(.secondary)
             }
-            Picker("Image background", selection: $app.backdrop) {
-                Text("Checkerboard").tag(0); Text("Light").tag(1); Text("Dark").tag(2)
+            Section("Appearance") {
+                Picker("Preview background", selection: $app.backdrop) {
+                    Text("Checkerboard").tag(0); Text("Light").tag(1); Text("Dark").tag(2)
+                }
             }
-            Divider()
-            HStack {
-                Text("Clips stay on this Mac until you delete them.").font(.caption).foregroundStyle(.secondary)
-                Spacer()
-                Button("Storage…") { NSWorkspace.shared.open(app.store.root) }
+            Section("Storage") {
+                HStack {
+                    Text("Clips are saved on this Mac.").foregroundStyle(.secondary)
+                    Spacer()
+                    Button("Show in Finder") { NSWorkspace.shared.open(app.store.root) }
+                }
             }
-            Text("No accounts. No uploads. Just your ideas.").font(.caption).foregroundStyle(.tertiary)
-        }.padding(28).frame(maxWidth: .infinity, maxHeight: .infinity)
+        }.formStyle(.grouped)
     }
 }
 struct ShortcutRecorder: NSViewRepresentable {
@@ -260,11 +257,12 @@ struct ShortcutRecorder: NSViewRepresentable {
 struct AboutView: View {
     var body: some View {
         VStack(spacing: 13) {
-            Image(systemName: "lasso").font(.system(size: 38, weight: .light)).foregroundStyle(.tint)
-                .frame(width: 76, height: 76).glassEffect(.regular, in: RoundedRectangle(cornerRadius: 22))
+            Image(nsImage: NSApp.applicationIconImage).resizable().interpolation(.high)
+                .frame(width: 76, height: 76)
             Text("SnipShelf").font(.system(size: 25, weight: .semibold))
             Text("Keep the part you love.").foregroundStyle(.secondary)
-            Text("Version 0.3.0 · Free & open source").font(.caption).padding(.top, 8)
+            Text("Version \(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "Development") · Free & open source")
+                .font(.caption).padding(.top, 8)
             Text("Made for your creative flow.\nMIT License · On-device by design.")
                 .font(.caption).foregroundStyle(.secondary).multilineTextAlignment(.center)
         }.padding(24).frame(maxWidth: .infinity, maxHeight: .infinity)

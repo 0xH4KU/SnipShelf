@@ -58,7 +58,6 @@ struct ShelfCollection: NSViewRepresentable {
             guard let card = view as? CardView else { return }
             card.picture.image = app.store.thumbnail(for: clip)
             card.caption.stringValue = clip.name
-            card.style = app.backdrop
             card.selected = app.store.selectedIDs.contains(clip.id)
             card.recent = app.store.latestID == clip.id
             card.toolTip = "\(clip.name) · \(clip.width) × \(clip.height) · Double-click or Space to preview"
@@ -68,23 +67,23 @@ struct ShelfCollection: NSViewRepresentable {
     final class CardView: NSView {
         let picture = NSImageView()
         let caption = NSTextField(labelWithString: "")
-        var style = 0 { didSet { needsDisplay = true } }
         var selected = false { didSet { needsDisplay = true } }
         var recent = false { didSet { needsDisplay = true } }
         override var isFlipped: Bool { true }
         override init(frame frameRect: NSRect) {
             super.init(frame: frameRect)
             picture.imageScaling = .scaleProportionallyUpOrDown
-            caption.font = .systemFont(ofSize: 10)
-            caption.textColor = .secondaryLabelColor
+            caption.font = .systemFont(ofSize: 11)
+            caption.textColor = .labelColor
+            caption.alignment = .center
             caption.lineBreakMode = .byTruncatingMiddle
             addSubview(picture); addSubview(caption)
         }
         required init?(coder: NSCoder) { fatalError() }
         override func layout() {
             super.layout()
-            picture.frame = CGRect(x: 16, y: 16, width: max(1, bounds.width - 32), height: 96)
-            caption.frame = CGRect(x: 6, y: 129, width: max(1, bounds.width - 12), height: 18)
+            picture.frame = CGRect(x: 10, y: 10, width: max(1, bounds.width - 20), height: 106)
+            caption.frame = CGRect(x: 6, y: 132, width: max(1, bounds.width - 12), height: 18)
         }
         override func draw(_ dirtyRect: NSRect) {
             if selected {
@@ -96,17 +95,6 @@ struct ShelfCollection: NSViewRepresentable {
                 let border = NSBezierPath(roundedRect: bounds.insetBy(dx: 1, dy: 1), xRadius: 15, yRadius: 15)
                 border.lineWidth = 1.5; border.stroke()
             }
-            NSGraphicsContext.saveGraphicsState()
-            let well = CGRect(x: 3, y: 3, width: max(1, bounds.width - 6), height: 122)
-            NSBezierPath(roundedRect: well, xRadius: 12, yRadius: 12).addClip()
-            NSColor(calibratedWhite: style == 2 ? 0.17 : 0.94, alpha: 1).setFill(); well.fill()
-            if style == 0 {
-                NSColor(calibratedWhite: 0.88, alpha: 1).setFill()
-                for y in 0...12 { for x in 0...Int(well.width / 10) where (x + y) % 2 == 0 {
-                    CGRect(x: 3 + x * 10, y: 3 + y * 10, width: 10, height: 10).fill()
-                } }
-            }
-            NSGraphicsContext.restoreGraphicsState()
         }
     }
     final class CollectionView: NSCollectionView {
@@ -160,6 +148,14 @@ struct ShelfCollection: NSViewRepresentable {
         }
         func collectionView(_ collectionView: NSCollectionView, didSelectItemsAt indexPaths: Set<IndexPath>) { updateSelection(collectionView) }
         func collectionView(_ collectionView: NSCollectionView, didDeselectItemsAt indexPaths: Set<IndexPath>) { updateSelection(collectionView) }
+        func collectionView(_ collectionView: NSCollectionView, draggingSession session: NSDraggingSession,
+                            willBeginAt screenPoint: NSPoint, forItemsAt indexPaths: Set<IndexPath>) {
+            app.isDraggingClips = true
+        }
+        func collectionView(_ collectionView: NSCollectionView, draggingSession session: NSDraggingSession,
+                            endedAt screenPoint: NSPoint, dragOperation operation: NSDragOperation) {
+            app.isDraggingClips = false
+        }
         func collectionView(_ collectionView: NSCollectionView, pasteboardWriterForItemAt indexPath: IndexPath) -> NSPasteboardWriting? {
             let clip = clips[indexPath.item]
             do {
