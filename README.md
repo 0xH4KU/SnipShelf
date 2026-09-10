@@ -4,14 +4,14 @@
 
 Draw around part of an image, review the transparent cutout, and keep it nearby to copy or drag into your work. Built with SwiftUI, AppKit, ScreenCaptureKit, and Apple Vision. All processing and storage stay on your Mac; no third-party dependencies or account required.
 
-**Version 0.1.0** · [Release notes](docs/releases/0.1.0.md)
+**Version 0.1.1** · [Release notes](docs/releases/0.1.1.md)
 
 ![Review a selection before keeping it](docs/review.jpg)
 
 ## Features
 
 - Freehand lasso with light stabilization and gentle edge assistance that yields to your gesture.
-- Polygon selection, zoom and pan, and Original / Cutout comparison, refinement undo, and Redraw / Refine / Keep Clip controls.
+- Polygon selection, zoom and pan, compact cutout confirmation, refinement undo, and Redraw / Refine / Keep Clip controls.
 - A floating shelf that tucks against the screen edge, with multi-selection, a resizable image preview, clipboard support, and deletion undo.
 - PNG cutouts with transparency, stored locally and available to other apps through copy and drag.
 
@@ -35,11 +35,11 @@ The script also accepts `--verify`, `--logs`, and `--debug`. Set `DEVELOPER_DIR`
 Release packaging uses an optimized Apple Silicon build, maps source paths,
 strips debug symbols, and bundles the MIT license. It checks the extracted ZIP's
 signature, architecture, version, contents, and common private build paths before
-writing `dist/SnipShelf-0.1.0-arm64.zip.sha256`. To repeat the checks:
+writing `dist/SnipShelf-0.1.1-arm64.zip.sha256`. To repeat the checks:
 
 ```sh
-python3 scripts/check_release.py dist/SnipShelf-0.1.0-arm64.zip
-(cd dist && shasum -a 256 -c SnipShelf-0.1.0-arm64.zip.sha256)
+python3 scripts/check_release.py dist/SnipShelf-0.1.1-arm64.zip
+(cd dist && shasum -a 256 -c SnipShelf-0.1.1-arm64.zip.sha256)
 ```
 
 Ad-hoc signing uses no developer certificate or Team ID. Downloads are **not

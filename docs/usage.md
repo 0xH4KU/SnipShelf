@@ -8,7 +8,7 @@ Draw a lasso or polygon around an element, keep the transparent cutout nearby, a
 
 ## Requirements and first launch
 
-- macOS 26 or newer. The 0.1.0 release ZIP supports Apple Silicon (arm64).
+- macOS 26 or newer. The 0.1.1 release ZIP supports Apple Silicon (arm64).
 - Unzip the download and move `SnipShelf.app` to Applications.
 - Open `SnipShelf.app`. It lives in the menu bar; there is no Dock icon.
 - Start a capture from the menu bar or press **Command–Shift–2**. If macOS asks, allow screen recording in **System Settings → Privacy & Security → Screen & System Audio Recording**. If the system requests a relaunch, quit and reopen the app.
@@ -25,14 +25,14 @@ Managed Macs may restrict this exception. You can also build from source.
 
 ![Review a selection before keeping it](review.jpg)
 
-- Releasing a lasso (or finishing a polygon) now **reviews** the selection. Nothing is stored until you press the **Keep Clip** button or Return in review.
+- Releasing a lasso (or finishing a polygon) hides the capture editor and opens a compact **Capture Preview** near the selection. The desktop becomes visible again. Nothing is stored until you press **Keep Clip** or Return; Escape or the preview's close button cancels.
 - **Redraw** clears the current outline and lets you start again on the same image. It does not delete existing shelf clips. Command–Z restores the outline if you change your mind.
-- **Refine** keeps the path. Drag from a point on the existing outline to cut back and retrace from there, including between sampled corners; start farther away to extend the endpoint. You can change Lasso/Polygon or assistance settings while reviewing, before refining. Command–Z restores the outline from before the most recent refinement; one outline checkpoint is retained.
+- **Refine** returns to the frozen source image with the path, zoom, pan, and toolbar position preserved. Drag from a point on the existing outline to cut back and retrace from there, including between sampled corners; start farther away to extend the endpoint. Command–Z restores the outline from before the most recent refinement and returns to the compact preview; one outline checkpoint is retained.
 - **Keep Clip** adds exactly one transparent PNG to the shelf and selects it for copying or dragging. The app warns if you try to quit with an unconfirmed selection.
-- Review opens on the actual transparent **Cutout**. Use **Original / Cutout** to compare without shifting or resizing the subject; zoom and pan are shared between both views.
+- The compact preview shows the actual transparent cutout against a subtle neutral background. Use **Refine** to inspect it in the original image.
 - **Lasso stays freehand.** Gentle edge help can make a tiny correction toward a nearby edge aligned with your stroke. It fades around corners and competing edges, and yields entirely in dense regions. It never locks onto a contour or inserts contour vertices. **Option** bypasses edge help while keeping steadiness.
 - [Apple Vision contours](https://developer.apple.com/documentation/vision/vndetectcontoursrequest) are prepared in the background. A lasso begun before they are ready stays freehand for that stroke; dragging never scans source pixels. Polygon mode retains explicit snapping with **Tab** to choose nearby edges and local pixel fallback when needed.
-- Zoom, Fit, 100%, pinch and scroll-to-pan also work on frozen screen captures, before drawing and during review.
+- Zoom, Fit, 100%, pinch and scroll-to-pan work in the capture editor before drawing. Use Redraw to clear an outline before changing the view; Command–Z can restore it.
 - The shelf now uses native macOS collection selection. **Drag from empty space** across thumbnails to select a group; Command-click toggles items and Command–A selects all. Press **Delete**, use the trash button, or right-click for batch deletion. **Command–Z** restores the whole deleted group, including after new clips have been added.
 
 Adaptive steadiness remains available in the wand menu (default 55%; zero disables it), with at most one screen point of filter lag. Freehand edge help searches within four screen points and contributes at most about 1.1 pt of correction. Polygon snap distance defaults to 10 pt and can be set from 4–24 pt. Choices persist. Vision uses a 1536-pixel working image; export retains the original pixels. Assistance is intentionally conservative on low-contrast or complex artwork and does not perform object segmentation.
@@ -49,7 +49,7 @@ Adaptive steadiness remains available in the wand menu (default 55%; zero disabl
 
 Use **Crop a Copy** on an existing clip to crop it again without changing the original. Fit shows the whole image, 100% maps one source pixel to one display pixel, +/- or a pinch adjusts zoom, and scrolling pans. Zoom and pan are locked while drawing.
 
-PNG, JPEG, WebP, and HEIC files can be imported with the + button, dragged into the shelf, or opened with SnipShelf from Finder. Pasted image data is also supported. Images above 100 megapixels are rejected to bound memory use. Output is anti-aliased, 8-bit sRGB PNG with transparency; HDR output and animated images are outside v0.1.0.
+PNG, JPEG, WebP, and HEIC files can be imported with the + button, dragged into the shelf, or opened with SnipShelf from Finder. Pasted image data is also supported. Images above 100 megapixels are rejected to bound memory use. Output is anti-aliased, 8-bit sRGB PNG with transparency; HDR output and animated images are outside v0.1.1.
 
 ## The shelf
 

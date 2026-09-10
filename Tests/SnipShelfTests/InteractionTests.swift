@@ -5,6 +5,81 @@ import UniformTypeIdentifiers
 @testable import SnipShelf
 
 final class InteractionTests: XCTestCase {
+    @MainActor func testCaptureReviewRestoresDesktopAndKeepsSelectionUntilConfirmed() async throws {
+        _ = NSApplication.shared
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let suite = "org.snipshelf.tests." + UUID().uuidString
+        let preferences = UserDefaults(suiteName: suite)!
+        defer { try? FileManager.default.removeItem(at: root); preferences.removePersistentDomain(forName: suite) }
+        let app = AppController(store: ShelfStore(root: root), preferences: preferences)
+        let screen = try XCTUnwrap(NSScreen.main)
+        let image = try SnipShelfTests().image(width: 900, height: 600)
+        func descendants(_ view: NSView) -> [NSView] { [view] + view.subviews.flatMap(descendants) }
+        func key(_ code: UInt16, in panel: NSWindow) -> NSEvent {
+            NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0,
+                            windowNumber: panel.windowNumber, context: nil, characters: "",
+                            charactersIgnoringModifiers: "", isARepeat: false, keyCode: code)!
+        }
+        for screenCapture in [true, false] {
+            app.presentCanvas(image: image, frame: screen.visibleFrame, screenCapture: screenCapture, name: "Review test")
+            let model = try XCTUnwrap(app.captureModel)
+            defer { model.cancel() }
+            let editor = try XCTUnwrap(NSApp.windows.first { $0.title == "Crop a Copy" && $0.isVisible })
+            try await Task.sleep(for: .milliseconds(80))
+            let canvas = try XCTUnwrap(descendants(XCTUnwrap(editor.contentView)).compactMap { $0 as? CanvasNSView }.first)
+            model.scale = 1.2; model.offset = CGPoint(x: 12, y: -18)
+            model.smoothing = 0; model.snapEnabled = false
+            let stroke = [CGPoint(x: 250, y: 200), CGPoint(x: 650, y: 200), CGPoint(x: 600, y: 320), CGPoint(x: 260, y: 300)]
+            func mouse(_ type: NSEvent.EventType, _ pixel: CGPoint) -> NSEvent {
+                let rect = canvas.imageRect
+                let location = canvas.convert(CGPoint(x: rect.minX + pixel.x * rect.width / 900,
+                                                     y: rect.minY + pixel.y * rect.height / 600), to: nil)
+                return NSEvent.mouseEvent(with: type, location: location, modifierFlags: [], timestamp: 0,
+                                         windowNumber: editor.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1)!
+            }
+            canvas.mouseDown(with: mouse(.leftMouseDown, stroke[0]))
+            for point in stroke.dropFirst() { canvas.mouseDragged(with: mouse(.leftMouseDragged, point)) }
+            canvas.mouseUp(with: mouse(.leftMouseUp, stroke[0]))
+            let outline = canvas.points
+            XCTAssertGreaterThan(outline.count, 2)
+            let bytes = try ImageCore.png(XCTUnwrap(model.reviewImage))
+            var panel = try XCTUnwrap(NSApp.windows.first { $0.title == "Capture Preview" && $0.isVisible })
+            XCTAssertFalse(editor.isVisible)
+            XCTAssertEqual(panel.level, .floating)
+            XCTAssertLessThanOrEqual(panel.frame.width, 340)
+            XCTAssertLessThan(panel.frame.height, 400)
+            XCTAssertTrue(screen.visibleFrame.contains(panel.frame))
+            XCTAssertEqual(app.store.clips.count, screenCapture ? 0 : 1)
+            app.refineCapture()
+            canvas.refresh()
+            XCTAssertTrue(editor.isVisible)
+            XCTAssertFalse(panel.isVisible)
+            XCTAssertEqual(canvas.points, outline)
+            XCTAssertEqual(model.scale, 1.2)
+            XCTAssertEqual(model.offset, CGPoint(x: 12, y: -18))
+            model.undoSelection()
+            XCTAssertEqual(try ImageCore.png(XCTUnwrap(model.reviewImage)), bytes)
+            panel = try XCTUnwrap(NSApp.windows.first { $0.title == "Capture Preview" && $0.isVisible })
+            XCTAssertFalse(editor.isVisible)
+            XCTAssertTrue(panel.performKeyEquivalent(with: key(36, in: panel)))
+            model.confirm()
+            XCTAssertNil(app.captureModel)
+            XCTAssertEqual(app.store.clips.count, screenCapture ? 1 : 2, "Return saves exactly once")
+        }
+        for closeButton in [false, true] {
+            app.presentCanvas(image: image, frame: screen.visibleFrame, screenCapture: true, name: "Cancel test")
+            let model = try XCTUnwrap(app.captureModel)
+            try model.prepareReview(points: [CGPoint(x: 0, y: 0), CGPoint(x: 100, y: 0), CGPoint(x: 0, y: 100)])
+            let panel = try XCTUnwrap(NSApp.windows.first { $0.title == "Capture Preview" && $0.isVisible })
+            XCTAssertTrue(screen.visibleFrame.contains(panel.frame), "Corner selections must keep controls on screen")
+            if closeButton { panel.performClose(nil) }
+            else { XCTAssertTrue(panel.performKeyEquivalent(with: key(53, in: panel))) }
+            XCTAssertNil(app.captureModel)
+            XCTAssertFalse(panel.isVisible)
+            XCTAssertEqual(app.store.clips.count, 2)
+        }
+    }
+
     @MainActor func testMenuBarStickerRendersAsATemplateAtBothDisplayScales() throws {
         _ = NSApplication.shared
         let icon = AppController.menuBarIcon()
@@ -303,6 +378,8 @@ final class InteractionTests: XCTestCase {
             try XCTUnwrap(bitmap.representation(using: .png, properties: [:])).write(to: directory.appendingPathComponent(name + ".png"))
         }
         for (appearance, suffix): (NSAppearance.Name, String) in [(.aqua, "light"), (.darkAqua, "dark")] {
+            try await render(NSHostingView(rootView: CaptureReviewView(image: XCTUnwrap(model.reviewImage), refine: {}, confirm: {})),
+                             size: CGSize(width: 340, height: 300), name: "capture-review-" + suffix, appearance: appearance)
             try await render(NSHostingView(rootView: ShelfView(app: app)), size: CGSize(width: 340, height: 440), name: "shelf-" + suffix, appearance: appearance)
             try await render(NSHostingView(rootView: SettingsView(app: app)), size: CGSize(width: 460, height: 360), name: "settings-" + suffix, appearance: appearance)
             model.showCutout = true

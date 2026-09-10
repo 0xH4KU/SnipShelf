@@ -32,7 +32,8 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
     @ObservationIgnored private var hotKey: EventHotKeyRef?
     @ObservationIgnored private var hotKeyHandler: EventHandlerRef?
     @ObservationIgnored private var captureWindow: NSWindow?
-    @ObservationIgnored private var captureModel: CanvasModel?
+    @ObservationIgnored private(set) var captureModel: CanvasModel?
+    @ObservationIgnored private var captureReviewWindow: ShelfPanel?
     @ObservationIgnored private var settingsWindow: NSWindow?
     @ObservationIgnored private var aboutWindow: NSWindow?
     @ObservationIgnored private var previewWindow: ShelfPanel?
@@ -232,7 +233,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
                           screenCapture: false, name: "\(clip.name) — crop")
         } catch { store.message = error.localizedDescription }
     }
-    private func presentCanvas(image: CGImage, frame: CGRect, screenCapture: Bool, name: String) {
+    func presentCanvas(image: CGImage, frame: CGRect, screenCapture: Bool, name: String) {
         let model = CanvasModel(image: image, isScreen: screenCapture, preferences: defaults, complete: { [weak self] output in
             guard let self else { return }
             self.dismissCanvas()
@@ -247,12 +248,63 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
         window.contentView = NSHostingView(rootView: CaptureView(model: model))
         window.collectionBehavior = [.fullScreenAuxiliary, .moveToActiveSpace]
         captureModel = model; captureWindow = window
+        model.reviewReady = { [weak self] in self?.presentCaptureReview() }
         NSApp.activate(ignoringOtherApps: true)
         window.makeKeyAndOrderFront(nil)
     }
     private func dismissCanvas() {
+        captureReviewWindow?.delegate = nil
+        captureReviewWindow?.close(); captureReviewWindow = nil
         captureWindow?.orderOut(nil); captureWindow?.close(); captureWindow = nil; captureModel = nil
         restoreFocus()
+    }
+    private func presentCaptureReview() {
+        guard let model = captureModel, let image = model.reviewImage, let canvasWindow = captureWindow else { return }
+        func canvas(in view: NSView) -> CanvasNSView? {
+            if let view = view as? CanvasNSView { return view }
+            return view.subviews.lazy.compactMap { canvas(in: $0) }.first
+        }
+        let selection = canvasWindow.contentView.flatMap { canvas(in: $0)?.reviewScreenRect } ?? canvasWindow.frame
+        let visible = canvasWindow.screen?.visibleFrame ?? NSScreen.main?.visibleFrame ?? canvasWindow.frame
+        let size = CGSize(width: min(340, visible.width),
+                          height: min(visible.height - 30, max(110, min(250, 288 * CGFloat(image.height) / CGFloat(image.width))) + 76))
+        let panel = ShelfPanel(contentRect: CGRect(origin: .zero, size: size),
+                               styleMask: [.titled, .closable, .utilityWindow], backing: .buffered, defer: false)
+        panel.title = "Capture Preview"
+        panel.isReleasedWhenClosed = false
+        panel.isMovableByWindowBackground = true
+        panel.level = .floating
+        panel.collectionBehavior = [.fullScreenAuxiliary, .moveToActiveSpace]
+        panel.delegate = self
+        panel.contentView = NSHostingView(rootView: CaptureReviewView(image: image, refine: { [weak self] in
+            self?.refineCapture()
+        }, confirm: { [weak model] in model?.confirm() }))
+        panel.onKey = { [weak model] event in
+            guard event.modifierFlags.intersection([.command, .control, .option, .shift]).isEmpty else { return false }
+            switch event.keyCode {
+            case 36, 76: model?.confirm()
+            case 53: model?.cancel()
+            default: return false
+            }
+            return true
+        }
+        var origin = CGPoint(x: selection.midX - panel.frame.width / 2, y: selection.minY - panel.frame.height - 12)
+        if origin.y < visible.minY { origin.y = selection.maxY + 12 }
+        origin.x = min(max(visible.minX, origin.x), visible.maxX - panel.frame.width)
+        origin.y = min(max(visible.minY, origin.y), visible.maxY - panel.frame.height)
+        panel.setFrameOrigin(origin)
+        captureReviewWindow?.delegate = nil
+        captureReviewWindow?.close()
+        captureReviewWindow = panel
+        canvasWindow.orderOut(nil)
+        panel.makeKeyAndOrderFront(nil)
+    }
+    func refineCapture() {
+        guard let model = captureModel, model.reviewing else { return }
+        captureReviewWindow?.delegate = nil
+        captureReviewWindow?.close(); captureReviewWindow = nil
+        model.continueSelection()
+        captureWindow?.makeKeyAndOrderFront(nil)
     }
     private func restoreFocus() {
         if let previousApp, previousApp.processIdentifier != ProcessInfo.processInfo.processIdentifier { previousApp.activate() }
@@ -435,6 +487,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
     func windowWillClose(_ notification: Notification) {
         if notification.object as? NSWindow === previewWindow { previewClip = nil }
+        if notification.object as? NSWindow === captureReviewWindow { dismissCanvas() }
     }
 
     private func installHotKeyHandler() {

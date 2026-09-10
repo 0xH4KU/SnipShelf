@@ -12,7 +12,7 @@ DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test
 codesign --verify --strict dist/SnipShelf.app
 ```
 
-The suite contains **32 behavioral tests** plus one optional interface-rendering check covering:
+The suite contains **33 behavioral tests** plus one optional interface-rendering check covering:
 
 | Area | Coverage |
 | --- | --- |
@@ -23,6 +23,7 @@ The suite contains **32 behavioral tests** plus one optional interface-rendering
 | Local storage | New-clip selection and failed-save selection preservation, persistence, deletion/undo, batch deletion with newer clips, missing assets, failed writes, corrupt index recovery, and 100 mixed-size clips. |
 | Drag import | Internal drags are rejected without writes; independent external PNG drops still import. |
 | Menu icon | Template rendering at 1× and 2×, transparent padding, opaque sticker, and a transparent peeled-corner crease. |
+| Compact capture review | Actual canvas events open a small floating preview and hide the editor; Refine preserves the outline, zoom and pan; undo restores the cutout; Return saves once; Escape and window-close cancel. Placement stays on screen for corner selections. Screen capture and recropping share this path. |
 | AppKit interaction | Canvas mouse event flows, actual-size scaling, shelf move/dock state, continuous inward pulls from both edges, preview navigation/closing, native preview Fit/100%, background-picker insets after repeated zoom resets and resizing, and clear thumbnail backgrounds. |
 
 Freehand tests bound filter lag to one screen point and edge correction to 1.1 screen points. The tested combined trace stays within 2.1 points of the pointer. These are synthetic behavior checks, not proof of subjective smoothness on arbitrary artwork or devices.
@@ -31,11 +32,11 @@ Freehand tests bound filter lag to one screen point and edge correction to 1.1 s
 
 ```sh
 ./scripts/build_and_run.sh --release
-python3 scripts/check_release.py dist/SnipShelf-0.1.0-arm64.zip
-(cd dist && shasum -a 256 -c SnipShelf-0.1.0-arm64.zip.sha256)
+python3 scripts/check_release.py dist/SnipShelf-0.1.1-arm64.zip
+(cd dist && shasum -a 256 -c SnipShelf-0.1.1-arm64.zip.sha256)
 ```
 
-The check verifies the exact bundled file list, version 0.1.0/build 1, arm64
+The check verifies the exact bundled file list, version 0.1.1/build 2, arm64
 architecture, and the ad-hoc signature after extraction. It rejects common
 local-user/build paths and private-key markers in bundled files. Only the app
 executable, plist, icon, MIT license, and signature resources are distributed;
@@ -51,7 +52,7 @@ To render the shelf, settings, selection comparison and preview with synthetic a
 DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer SNIPSHELF_RENDER_QA="$PWD/.local/ux-qa" swift test --filter InteractionTests/testRenderInterfaceWhenRequested
 ```
 
-The September 10 run checked content layout and Original/Cutout alignment in light and dark appearances. AppKit cached-view PNGs do **not** capture compositor-backed Liquid Glass and vibrant controls faithfully, so they are not final appearance screenshots. The Computer Use service was unavailable on this host; physical drag continuity, trackpad feel and the complete on-screen material appearance still require a live manual pass. The synthetic event checks above do not replace that pass.
+The September 10 render checks cover light and dark content layouts. AppKit cached-view PNGs do **not** capture compositor-backed Liquid Glass and vibrant controls faithfully, so they are not final appearance screenshots. The direct Computer Use plugin successfully inspected the running app and dragged the capture toolbar in Crop a Copy: a 100-point horizontal, 140-point vertical drag moved the toolbar by that amount. Its gesture now uses the fixed canvas coordinate space. The full screen-capture flow was blocked by macOS screen-recording permission; arbitrary canvas clicks also encountered the plugin's `windowNotFoundAtPosition` error. Compact-preview lifecycle checks use native AppKit tests, and trackpad feel still needs manual verification.
 
 ## Previous manual checks
 

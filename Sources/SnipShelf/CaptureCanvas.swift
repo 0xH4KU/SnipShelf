@@ -33,6 +33,7 @@ final class CanvasModel {
     @ObservationIgnored private let preferences: UserDefaults?
     var complete: (CGImage) -> Void
     var cancel: () -> Void
+    @ObservationIgnored var reviewReady: (() -> Void)?
     init(image: CGImage, isScreen: Bool, preferences: UserDefaults? = nil, complete: @escaping (CGImage) -> Void, cancel: @escaping () -> Void) {
         session = CaptureSession(image: image)
         pixelEdges = PixelEdges(image)
@@ -69,6 +70,7 @@ final class CanvasModel {
         reviewOrigin = CGPoint(x: max(0, floor(points.map(\.x).min() ?? 0)),
                                y: max(0, floor(points.map(\.y).min() ?? 0)))
         selecting = false
+        reviewReady?()
     }
     func continueSelection() {
         guard reviewing else { return }
@@ -91,6 +93,27 @@ final class CanvasModel {
     func fit() { scale = 1; actualSize = false; offset = .zero }
 }
 
+struct CaptureReviewView: View {
+    let image: CGImage
+    let refine: () -> Void
+    let confirm: () -> Void
+    var body: some View {
+        VStack(spacing: 12) {
+            Image(nsImage: NSImage(cgImage: image, size: .zero))
+                .resizable().scaledToFit().padding(12)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 10))
+                .accessibilityLabel("Selected cutout")
+            HStack {
+                Button("Refine", action: refine).buttonStyle(.borderless)
+                Spacer()
+                Button("Keep Clip", action: confirm).buttonStyle(.borderedProminent)
+                    .keyboardShortcut(.defaultAction)
+            }
+        }.padding(14).background(.regularMaterial)
+    }
+}
+
 struct CaptureView: View {
     @Bindable var model: CanvasModel
     @State private var toolbarOffset = CGSize.zero
@@ -107,7 +130,7 @@ struct CaptureView: View {
                                 .frame(width: 24, height: 28).contentShape(Rectangle())
                                 .accessibilityLabel("Move selection toolbar")
                                 .help("Drag to move the toolbar")
-                                .gesture(DragGesture().onChanged { value in
+                                .gesture(DragGesture(coordinateSpace: .named("captureCanvas")).onChanged { value in
                                     let limitX = max(0, (geometry.size.width - 600) / 2)
                                     toolbarOffset = CGSize(width: min(limitX, max(-limitX, toolbarStart.width + value.translation.width)),
                                                            height: min(max(0, geometry.size.height - 200), max(0, toolbarStart.height + value.translation.height)))
@@ -167,7 +190,8 @@ struct CaptureView: View {
                     }.padding(.bottom, 22)
                 }
             }
-        }.task { await model.analyzeEdges() }
+        }.coordinateSpace(name: "captureCanvas")
+            .task { await model.analyzeEdges() }
     }
     private var hint: String {
         if let error = model.error { return error }
@@ -284,6 +308,13 @@ final class CanvasNSView: NSView {
         let rect = imageRect
         return CGPoint(x: rect.minX + p.x * rect.width / CGFloat(model.session.image.width),
                        y: rect.minY + p.y * rect.height / CGFloat(model.session.image.height))
+    }
+    var reviewScreenRect: CGRect? {
+        guard let window, let image = model.reviewImage else { return nil }
+        let rect = CGRect(origin: canvasPoint(model.reviewOrigin),
+                          size: CGSize(width: CGFloat(image.width) / pixelsPerPoint,
+                                       height: CGFloat(image.height) / pixelsPerPoint))
+        return window.convertToScreen(convert(rect, to: nil))
     }
     private func pixelPoint(_ event: NSEvent) -> CGPoint {
         let p = model.session.pixelPoint(convert(event.locationInWindow, from: nil), in: imageRect)
