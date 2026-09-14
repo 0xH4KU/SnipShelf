@@ -44,6 +44,13 @@ selection using Apple Vision; turn off **Subject mask** to restore the original 
 the next try; Escape redraws.
 Settings are saved separately and trial cutouts stay in memory.
 
+Lab starts in **Fluid** drawing mode. Switch **Drawing feel** between Classic and
+Fluid to compare on the same image, and use Steadiness to tune either mode.
+Fluid adjusts smoothing by elapsed time and pointer speed, lands at the release
+position, and lights the start ring when releasing will close the lasso. Hold
+Option to bypass closing help. These drawing changes are being tested in Lab;
+the main app still uses Classic.
+
 ```sh
 ./scripts/build_and_run.sh --lab        # build once; thereafter open the existing lab
 ./scripts/build_and_run.sh --lab-build  # rebuild the lab after changing Swift code

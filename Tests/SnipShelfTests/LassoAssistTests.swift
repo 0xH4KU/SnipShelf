@@ -3,6 +3,71 @@ import AppKit
 @testable import SnipShelf
 
 final class LassoAssistTests: XCTestCase {
+    func testFluidSteadinessStaysConsistentAcrossEventRatesAndScale() {
+        var meanLags: [CGFloat] = []
+        for hz in [60, 120, 240, 1000] {
+            var filter = LassoStabilizer(), retina = LassoStabilizer()
+            var energy: CGFloat = 0, lag: CGFloat = 0
+            for i in 0...(hz * 2) {
+                let time = Double(i) / Double(hz)
+                let p = CGPoint(x: 40 * time, y: 0.9 * sin(time * 2 * .pi * 18))
+                let actual = filter.append(p, strength: 0.55, pixelsPerPoint: 1, timestamp: time)
+                let scaled = retina.append(CGPoint(x: p.x * 2, y: p.y * 2), strength: 0.55, pixelsPerPoint: 2, timestamp: time)
+                XCTAssertLessThanOrEqual(hypot(actual.x - p.x, actual.y - p.y), 1.8)
+                XCTAssertEqual(actual.x, scaled.x / 2, accuracy: 0.001)
+                XCTAssertEqual(actual.y, scaled.y / 2, accuracy: 0.001)
+                if i > hz { energy += actual.y * actual.y; lag += p.x - actual.x }
+            }
+            XCTAssertLessThan(sqrt(energy / CGFloat(hz)), 0.2, "Slow-stroke jitter must stay low at \(hz) Hz")
+            meanLags.append(lag / CGFloat(hz))
+            filter.reset()
+            for i in 0...hz {
+                let p = CGPoint(x: 800 * Double(i) / Double(hz), y: 0)
+                let actual = filter.append(p, strength: 0.55, pixelsPerPoint: 1, timestamp: Double(i) / Double(hz))
+                if i > hz / 4 { XCTAssertEqual(actual, p, "A deliberate sweep must catch up at every event rate") }
+            }
+            XCTAssertEqual(filter.append(CGPoint(x: 900, y: 10), strength: 1, pixelsPerPoint: 1, timestamp: 2), CGPoint(x: 900, y: 10), "A pause must not retain stale velocity")
+            XCTAssertEqual(filter.append(.zero, strength: 0, pixelsPerPoint: 1, timestamp: 2.01), .zero)
+        }
+        XCTAssertLessThan((meanLags.max() ?? 0) - (meanLags.min() ?? 0), 0.4, "The same motion should feel similar across event rates")
+    }
+
+    @MainActor func testFluidCanvasClosesNearStartAndPreservesReleasePosition() throws {
+        _ = NSApplication.shared
+        let helper = SnipShelfTests()
+        for screenScale: CGFloat in [1, 2] { for fluid in [false, true] { for bypass in [false, true] {
+            let model = CanvasModel(image: try helper.image(width: 200, height: 200), isScreen: false,
+                fluidDrawing: fluid, complete: { _ in XCTFail("Release must only review") }, cancel: {})
+            model.subjectMaskEnabled = false; model.snapEnabled = false
+            let view = CanvasNSView(model: model)
+            let frame = CGRect(x: 0, y: 0, width: 200 * screenScale, height: 200 * screenScale)
+            let window = NSWindow(contentRect: frame, styleMask: .borderless, backing: .buffered, defer: false)
+            window.isReleasedWhenClosed = false; window.contentView = view; view.frame = frame
+            defer { window.close() }
+            func event(_ type: NSEvent.EventType, _ p: CGPoint, _ time: TimeInterval) -> NSEvent {
+                NSEvent.mouseEvent(with: type, location: CGPoint(x: p.x * screenScale, y: (200 - p.y) * screenScale),
+                    modifierFlags: bypass ? [.option] : [], timestamp: time, windowNumber: window.windowNumber,
+                    context: nil, eventNumber: 0, clickCount: 1, pressure: 1)!
+            }
+            let start = CGPoint(x: 30, y: 30), end = CGPoint(x: 37, y: 30)
+            view.mouseDown(with: event(.leftMouseDown, start, 1))
+            XCTAssertEqual(view.points, [start], "The first point must respond immediately")
+            XCTAssertFalse(view.canCloseLasso)
+            for (i, p) in [CGPoint(x: 160, y: 30), CGPoint(x: 160, y: 160), CGPoint(x: 30, y: 160), end].enumerated() {
+                view.mouseDragged(with: event(.leftMouseDragged, p, 1.1 + Double(i) * 0.1))
+            }
+            let closes = fluid && !bypass && screenScale == 1
+            XCTAssertEqual(view.canCloseLasso, closes, "Closing reach is measured in screen points and respects Option")
+            view.mouseUp(with: event(.leftMouseUp, end, 1.41))
+            XCTAssertTrue(model.reviewing)
+            XCTAssertFalse(view.canCloseLasso)
+            if fluid { XCTAssertEqual(model.reviewPoints.last, closes ? start : end) }
+            XCTAssertEqual(try ImageCore.png(XCTUnwrap(model.reviewImage)), try ImageCore.png(ImageCore.crop(model.session.image, points: view.points)))
+            model.continueSelection(); view.refresh()
+            XCTAssertEqual(view.points, model.reviewPoints, "Refine must retain the completed stroke")
+        } } }
+    }
+
     func testSteadinessSuppressesJitterWithoutDelayingFastMotion() {
         var filter = LassoStabilizer(), retina = LassoStabilizer()
         var rawEnergy: CGFloat = 0, smoothEnergy: CGFloat = 0

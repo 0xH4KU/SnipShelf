@@ -18,6 +18,7 @@ final class SnipLabTests: XCTestCase {
         XCTAssertFalse(model.isScreen)
         XCTAssertNil(model.reviewReady, "The lab must not hide the canvas in a capture-review window")
         XCTAssertEqual(model.smoothing, 0.55)
+        XCTAssertTrue(model.fluidDrawing)
         XCTAssertTrue(model.subjectMaskEnabled)
         model.subjectMaskEnabled = false
         model.smoothing = 0; model.snapEnabled = false; model.snapRadius = 18
@@ -55,6 +56,7 @@ final class SnipLabTests: XCTestCase {
             XCTAssertTrue(lab.model === model, "Repeat trials reuse the frozen source and analysis")
         }
         model.mode = .polygon
+        model.fluidDrawing = false
         lab.showImage(try SnipShelfTests().image(), name: "Another image")
         let replacement = try XCTUnwrap(lab.model)
         XCTAssertFalse(replacement === model)
@@ -62,6 +64,7 @@ final class SnipLabTests: XCTestCase {
         XCTAssertEqual(replacement.smoothing, 0)
         XCTAssertFalse(replacement.snapEnabled)
         XCTAssertEqual(replacement.snapRadius, 18)
+        XCTAssertFalse(replacement.fluidDrawing)
         XCTAssertFalse(replacement.subjectMaskEnabled)
         lab.openImage(FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".png"))
         XCTAssertTrue(lab.model === replacement, "An unreadable file must preserve the current trial")

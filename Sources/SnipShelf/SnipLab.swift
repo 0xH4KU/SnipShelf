@@ -41,7 +41,8 @@ final class SnipLabController: NSObject, NSApplicationDelegate {
     }
 
     func showImage(_ image: CGImage, name: String) {
-        let next = CanvasModel(image: image, isScreen: false, preferences: preferences, complete: { _ in }, cancel: {})
+        let next = CanvasModel(image: image, isScreen: false, preferences: preferences,
+            fluidDrawing: preferences.object(forKey: "labFluidDrawing") as? Bool ?? true, complete: { _ in }, cancel: {})
         next.mode = model?.mode ?? .lasso
         next.showCutout = false
         // A trial stays in memory; Return and Escape both prepare the same image for another try.
@@ -136,11 +137,22 @@ struct SnipLabView: View {
                 Divider()
                 ScrollView {
                     VStack(alignment: .leading, spacing: 18) {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("Drawing feel").font(.headline)
+                            Picker("Drawing feel", selection: $model.fluidDrawing) {
+                                Text("Classic").tag(false)
+                                Text("Fluid").tag(true)
+                            }.pickerStyle(.segmented).labelsHidden()
+                            Text(model.fluidDrawing
+                                ? "Steady slow strokes, responsive sweeps. The start ring lights up when you can release to close. Option bypasses closing help."
+                                : "The current app's drawing feel. Switch modes to compare on the same image.")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }.disabled(model.selecting)
                         SelectionAssistanceView(model: model).disabled(model.selecting)
                         HStack {
-                            Button("Raw") { model.smoothing = 0; model.snapEnabled = false; model.subjectMaskEnabled = false }
+                            Button("Raw") { model.smoothing = 0; model.snapEnabled = false; model.subjectMaskEnabled = false; model.fluidDrawing = false }
                                 .help("Turn off drawing assistance and the subject mask")
-                            Button("App Defaults") { model.smoothing = 0.55; model.snapEnabled = true; model.snapRadius = 10; model.subjectMaskEnabled = true }
+                            Button("App Defaults") { model.smoothing = 0.55; model.snapEnabled = true; model.snapRadius = 10; model.subjectMaskEnabled = true; model.fluidDrawing = false }
                                 .help("Restore the app's default assistance for the next stroke")
                         }.disabled(model.selecting)
                         Text("Drawing settings apply to your next stroke.")

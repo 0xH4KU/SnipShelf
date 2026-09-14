@@ -12,7 +12,7 @@ DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test
 codesign --verify --strict dist/SnipShelf.app
 ```
 
-The suite contains **38 behavioral tests** plus one optional interface-rendering check covering:
+The suite contains **40 behavioral tests** plus one optional interface-rendering check covering:
 
 | Area | Coverage |
 | --- | --- |
@@ -21,7 +21,8 @@ The suite contains **38 behavioral tests** plus one optional interface-rendering
 | Review lifecycle | Default-on subject masking can be toggled back to exact original PNG pixels, including after refinement undo. The editable lasso and crop registration survive masking. Pending work cannot save an unseen result or resurrect a reset/confirmed selection. Lifecycle checks use a fixed mask independently of Vision's versioned recognition model. |
 | Polygon assistance | Local contour selection, release distance, alternate candidates, and pixel fallback on thin borders. |
 | Selection review | Continue from the middle of an existing segment, Redraw/Refine/Keep Clip transitions, one-step refinement undo restoring outline and PNG pixels, and exactly-once confirmation. |
-| Snip Lab | Repeated strokes on the real canvas, in-window review matching exported crop pixels, Refine/Undo, Next Try and Escape resetting the same source, and unreadable files preserving the current trial. |
+| Snip Lab | Classic/Fluid comparison with settings retained across images, repeated strokes on the real canvas, in-window review matching exported crop pixels, Refine/Undo, Next Try and Escape resetting the same source, and unreadable files preserving the current trial. |
+| Fluid drawing experiment | Timestamp-based smoothing at 60, 120, 240 and 1000 Hz, scale equivalence, immediate start, bounded lag, deliberate fast sweeps, and stale-velocity reset after pauses. Native canvas events cover the closing cue, 9-screen-point closing reach at different zoom levels, Option bypass, exact release endpoints, and refinement/export consistency. Enabled by default in Lab; the main app remains on Classic. |
 | Image processing | Coordinate mapping, orientation, concave and self-intersecting selections, invalid input, transparency, anti-aliasing, and PNG round-trips. |
 | Local storage | New-clip selection and failed-save selection preservation, persistence, deletion/undo, batch deletion with newer clips, missing assets, failed writes, corrupt index recovery, and 100 mixed-size clips. |
 | Drag import | Internal drags are rejected without writes; independent external PNG drops still import. |
@@ -30,6 +31,16 @@ The suite contains **38 behavioral tests** plus one optional interface-rendering
 | AppKit interaction | Canvas mouse event flows, actual-size scaling, shelf move/dock state, continuous inward pulls from both edges, preview navigation/closing, native preview Fit/100%, background-picker insets after repeated zoom resets and resizing, and clear thumbnail backgrounds. |
 
 At the default 55% steadiness, freehand tests bound filter lag to 1.8 screen points and edge correction to 1.1 screen points. The tested combined trace stays within 2.9 points of the pointer. On the alternating-jitter fixture, filtered vertical variation is below 8% of the input while deliberate fast motion follows immediately. These are synthetic behavior checks, not proof of subjective smoothness on arbitrary artwork or devices.
+
+The Lab-only Fluid experiment uses elapsed time and filtered pointer velocity
+to adapt a low-pass filter, following the approach described in the
+[1€ filter research](https://gery.casiez.net/1euro/), with an explicit lag ceiling
+and a faster response for deliberate sweeps. On the 40-point/second trace with
+0.9-point, 18-Hz jitter, output RMS stays below 0.2 points at all four tested
+event rates, and mean lag differs by less than 0.4 points between rates. The
+start ring highlights within 9 screen points after a sufficient stroke span;
+closing help only changes the endpoint on release. Physical mouse/trackpad
+comparison is still needed before promoting this mode to the main app.
 
 On September 14, the faint ellipse was reproduced from the exact practice-board
 pixels with a reconstructed rough lasso. Full-image Vision detection missed it,

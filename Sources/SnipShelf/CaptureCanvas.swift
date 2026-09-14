@@ -17,6 +17,7 @@ final class CanvasModel {
     var smoothing: Double { didSet { preferences?.set(smoothing, forKey: "lassoSmoothing") } }
     var snapEnabled: Bool { didSet { preferences?.set(snapEnabled, forKey: "lassoSnap") } }
     var snapRadius: Double { didSet { preferences?.set(snapRadius, forKey: "lassoSnapRadius") } }
+    var fluidDrawing: Bool { didSet { preferences?.set(fluidDrawing, forKey: "labFluidDrawing") } }
     var subjectMaskEnabled: Bool {
         didSet {
             preferences?.set(subjectMaskEnabled, forKey: "visionCorrection")
@@ -53,12 +54,13 @@ final class CanvasModel {
     var complete: (CGImage) -> Void
     var cancel: () -> Void
     @ObservationIgnored var reviewReady: (() -> Void)?
-    init(image: CGImage, isScreen: Bool, preferences: UserDefaults? = nil,
+    init(image: CGImage, isScreen: Bool, preferences: UserDefaults? = nil, fluidDrawing: Bool = false,
          subjectCutout: @escaping @Sendable (CGImage, [CGPoint]) throws -> CGImage? = { try SubjectMask.cutout($0, points: $1) },
          complete: @escaping (CGImage) -> Void, cancel: @escaping () -> Void) {
         session = CaptureSession(image: image)
         pixelEdges = PixelEdges(image)
         self.preferences = preferences
+        self.fluidDrawing = fluidDrawing
         self.subjectCutout = subjectCutout
         smoothing = min(1, max(0, preferences?.object(forKey: "lassoSmoothing") as? Double ?? 0.55))
         snapEnabled = preferences?.object(forKey: "lassoSnap") as? Bool ?? true
@@ -339,6 +341,7 @@ final class CanvasNSView: NSView {
     private var displayedReview: CGImage?
     private var continuing = false
     private var draggingLasso = false
+    private var fluidStroke = false
     private var alternatives: [ContourMap.Hit] = []
     private var alternativeIndex = 0
     private var lastPointer: CGPoint?
@@ -367,6 +370,7 @@ final class CanvasNSView: NSView {
         if !model.snapEnabled { previousHit = nil; snappedPoint = nil; alternatives = []; lastPointer = nil }
         if seenResume != model.resumeToken {
             seenResume = model.resumeToken; continuing = true; draggingLasso = false; lastPointer = nil
+            fluidStroke = model.fluidDrawing
             points = model.reviewPoints
             previousHit = nil; snappedPoint = nil; alternatives = []; stabilizer.reset()
             strokeEdges = model.edgeMap
@@ -481,8 +485,12 @@ final class CanvasNSView: NSView {
             }
             if let first = points.first {
                 let p = canvasPoint(first)
-                NSColor.white.setStroke()
-                NSBezierPath(ovalIn: CGRect(x: p.x - 4, y: p.y - 4, width: 8, height: 8)).stroke()
+                let closing = canCloseLasso
+                let radius: CGFloat = closing ? 7 : 4
+                let ring = NSBezierPath(ovalIn: CGRect(x: p.x - radius, y: p.y - radius, width: radius * 2, height: radius * 2))
+                if closing { NSColor.controlAccentColor.withAlphaComponent(0.25).setFill(); ring.fill() }
+                (closing ? NSColor.controlAccentColor : NSColor.white).setStroke()
+                ring.lineWidth = closing ? 2 : 1; ring.stroke()
             }
             if model.mode == .polygon {
                 for point in points {
@@ -500,6 +508,11 @@ final class CanvasNSView: NSView {
         }
     }
     private var pixelsPerPoint: CGFloat { CGFloat(model.session.image.width) / max(1, imageRect.width) }
+    var canCloseLasso: Bool {
+        guard fluidStroke, draggingLasso, !optionDown, points.count > 2, let first = points.first, let hover,
+              max(strokeBounds.width, strokeBounds.height) > 44 else { return false }
+        return hypot(hover.x - first.x, hover.y - first.y) <= 9 * pixelsPerPoint
+    }
     private func edgeCandidates(at point: CGPoint) -> [ContourMap.Hit] {
         let radius = CGFloat(model.snapRadius) * pixelsPerPoint
         let contours = strokeEdges?.candidates(to: point, radius: radius, previous: previousHit) ?? []
@@ -515,8 +528,9 @@ final class CanvasNSView: NSView {
         }
         return result
     }
-    private func assisted(_ raw: CGPoint, smoothing: Bool, bypass: Bool) -> CGPoint {
-        let input = smoothing ? stabilizer.append(raw, strength: CGFloat(model.smoothing), pixelsPerPoint: pixelsPerPoint) : raw
+    private func assisted(_ raw: CGPoint, smoothing: Bool, bypass: Bool, timestamp: TimeInterval? = nil) -> CGPoint {
+        let input = smoothing ? stabilizer.append(raw, strength: CGFloat(model.smoothing), pixelsPerPoint: pixelsPerPoint,
+                                                  timestamp: fluidStroke ? timestamp : nil) : raw
         defer { lastPointer = input }
         guard model.snapEnabled, !bypass else {
             previousHit = nil; snappedPoint = nil; alternatives = []
@@ -534,7 +548,10 @@ final class CanvasNSView: NSView {
     }
     private func appendLasso(_ event: NSEvent) {
         if let old = snappedPoint { setNeedsDisplay(ringRect(old)) }
-        let point = assisted(pixelPoint(event), smoothing: true, bypass: event.modifierFlags.contains(.option))
+        let raw = pixelPoint(event)
+        hover = raw
+        optionDown = event.modifierFlags.contains(.option)
+        let point = assisted(raw, smoothing: true, bypass: optionDown, timestamp: event.timestamp)
         if points.last.map({ hypot(point.x - $0.x, point.y - $0.y) >= 0.4 * pixelsPerPoint }) ?? true {
             points.append(point)
             strokeBounds = strokeBounds.union(ringRect(point))
@@ -560,10 +577,12 @@ final class CanvasNSView: NSView {
         optionDown = event.modifierFlags.contains(.option)
         if !model.selecting || (model.mode == .lasso && !continuing) {
             stabilizer.reset()
+            fluidStroke = model.fluidDrawing
             // Freeze detection for this stroke; an arriving Vision result must not bend a stroke in progress.
             strokeEdges = model.edgeMap
         }
-        let point = assisted(pixelPoint(event), smoothing: model.mode == .lasso, bypass: optionDown)
+        if model.mode == .lasso { hover = pixelPoint(event) }
+        let point = assisted(pixelPoint(event), smoothing: model.mode == .lasso, bypass: optionDown, timestamp: event.timestamp)
         if continuing {
             points = LassoPath.continuing(points, near: point, radius: 12 * pixelsPerPoint)
             strokeBounds = points.reduce(CGRect.null) { $0.union(ringRect($1)) }
@@ -586,8 +605,12 @@ final class CanvasNSView: NSView {
     }
     override func mouseUp(with event: NSEvent) {
         if draggingLasso, model.selecting {
-            draggingLasso = false
             appendLasso(event)
+            if fluidStroke, let first = points.first, let last = points.last {
+                let endpoint = canCloseLasso ? first : pixelPoint(event)
+                if hypot(last.x - endpoint.x, last.y - endpoint.y) > 0.001 { points.append(endpoint) }
+            }
+            draggingLasso = false
             finish()
         }
     }

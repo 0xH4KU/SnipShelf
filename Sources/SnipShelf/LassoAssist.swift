@@ -5,13 +5,37 @@ import Vision
 /// A short adaptive tether: steadies slow motion without delaying deliberate fast strokes.
 struct LassoStabilizer {
     private(set) var point: CGPoint?
-    mutating func reset() { point = nil }
-    mutating func append(_ input: CGPoint, strength: CGFloat, pixelsPerPoint: CGFloat) -> CGPoint {
+    private var previousInput: CGPoint?
+    private var previousTime: TimeInterval?
+    private var velocity = CGPoint.zero
+    mutating func reset() { point = nil; previousInput = nil; previousTime = nil; velocity = .zero }
+    mutating func append(_ input: CGPoint, strength: CGFloat, pixelsPerPoint: CGFloat, timestamp: TimeInterval? = nil) -> CGPoint {
+        defer { previousInput = input; previousTime = timestamp }
         guard let previous = point, strength > 0 else { point = input; return input }
         let distance = hypot(input.x - previous.x, input.y - previous.y)
         // More room to suppress mouse jitter; lag stays below 1.8 pt at the default, 3 pt at full strength.
-        let radius = (1 + 11 * min(1, strength)) * max(0.001, pixelsPerPoint)
-        let weight = min(1, max(0.18, distance / radius))
+        let scale = max(0.001, pixelsPerPoint)
+        let radius = (1 + 11 * min(1, strength)) * scale
+        var weight = min(1, max(0.18, distance / radius))
+        if let timestamp {
+            guard let previousTime, let previousInput, timestamp.isFinite,
+                  timestamp > previousTime, timestamp - previousTime <= 0.25 else {
+                velocity = .zero; point = input; return input
+            }
+            let dt = CGFloat(timestamp - previousTime)
+            let speedWeight = 1 - exp(-2 * .pi * 10 * dt)
+            velocity.x += ((input.x - previousInput.x) / (dt * scale) - velocity.x) * speedWeight
+            velocity.y += ((input.y - previousInput.y) / (dt * scale) - velocity.y) * speedWeight
+            let speed = hypot(velocity.x, velocity.y)
+            // Speed-adaptive low-pass filtering, measured in screen points and seconds.
+            let cutoff = 5 - 3.5 * min(1, strength) + 0.025 * speed
+            weight = 1 - exp(-2 * .pi * cutoff * dt)
+            var quick = min(1, max(0, (speed - 180) / 540))
+            quick = quick * quick * (3 - 2 * quick)
+            weight += (1 - weight) * quick
+            // ponytail: retain the existing lag ceiling; tune against physical devices in Lab before promoting.
+            weight = max(weight, 1 - radius / (4 * max(distance, 0.000001)))
+        }
         let result = CGPoint(x: previous.x + (input.x - previous.x) * weight,
                              y: previous.y + (input.y - previous.y) * weight)
         point = result
