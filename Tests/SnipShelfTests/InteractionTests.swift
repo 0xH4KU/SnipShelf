@@ -24,6 +24,8 @@ final class InteractionTests: XCTestCase {
             app.presentCanvas(image: image, frame: screen.visibleFrame, screenCapture: screenCapture, name: "Review test")
             let model = try XCTUnwrap(app.captureModel)
             defer { model.cancel() }
+            XCTAssertTrue(model.fluidDrawing)
+            XCTAssertTrue(model.showRemovedAreas)
             let editor = try XCTUnwrap(NSApp.windows.first { $0.title == "Crop a Copy" && $0.isVisible })
             try await Task.sleep(for: .milliseconds(80))
             let canvas = try XCTUnwrap(descendants(XCTUnwrap(editor.contentView)).compactMap { $0 as? CanvasNSView }.first)
@@ -50,7 +52,7 @@ final class InteractionTests: XCTestCase {
             XCTAssertLessThan(panel.frame.height, 400)
             XCTAssertTrue(screen.visibleFrame.contains(panel.frame))
             XCTAssertEqual(app.store.clips.count, screenCapture ? 0 : 1)
-            app.refineCapture()
+            app.editCapture(refineOutline: true)
             canvas.refresh()
             XCTAssertTrue(editor.isVisible)
             XCTAssertFalse(panel.isVisible)
@@ -61,10 +63,60 @@ final class InteractionTests: XCTestCase {
             XCTAssertEqual(try ImageCore.png(XCTUnwrap(model.reviewImage)), bytes)
             panel = try XCTUnwrap(NSApp.windows.first { $0.title == "Capture Preview" && $0.isVisible })
             XCTAssertFalse(editor.isVisible)
-            XCTAssertTrue(panel.performKeyEquivalent(with: key(36, in: panel)))
+            model.subjectMaskEnabled = true
+            await model.correctionTask?.value
+            app.editCapture(refineOutline: false)
+            try await Task.sleep(for: .milliseconds(80))
+            editor.layoutIfNeeded(); canvas.refresh()
+            XCTAssertTrue(editor.isVisible)
+            XCTAssertFalse(panel.isVisible)
+            XCTAssertTrue(model.reviewing, "Touch Up must preserve the mask instead of restarting the outline")
+            XCTAssertFalse(model.showCutout)
+            XCTAssertEqual(model.maskTool, .restore)
+            XCTAssertEqual(model.reviewPoints, outline)
+            XCTAssertEqual(model.scale, 1.2)
+            XCTAssertEqual(model.offset, CGPoint(x: 12, y: -18))
+            XCTAssertTrue(try descendants(XCTUnwrap(editor.contentView)).contains { $0 === canvas })
+            // Restore source pixels first so the edit check does not depend on Vision recognizing this synthetic image.
+            model.brushSize = 24
+            canvas.mouseDown(with: mouse(.leftMouseDown, CGPoint(x: 350, y: 240)))
+            canvas.mouseUp(with: mouse(.leftMouseUp, CGPoint(x: 400, y: 240)))
+            let restored = try ImageCore.png(XCTUnwrap(model.reviewImage))
+            model.maskTool = .erase
+            canvas.mouseDown(with: mouse(.leftMouseDown, CGPoint(x: 350, y: 240)))
+            canvas.keyDown(with: key(36, in: editor))
+            XCTAssertTrue(app.captureModel === model, "Return during a stroke must not save")
+            canvas.mouseDragged(with: mouse(.leftMouseDragged, CGPoint(x: 400, y: 240)))
+            canvas.mouseUp(with: mouse(.leftMouseUp, CGPoint(x: 400, y: 240)))
+            let edited = try ImageCore.png(XCTUnwrap(model.reviewImage))
+            XCTAssertNotEqual(edited, restored)
+            model.undoSelection()
+            XCTAssertEqual(try ImageCore.png(XCTUnwrap(model.reviewImage)), restored)
+            XCTAssertTrue(editor.isVisible, "Brush undo must stay in the editor")
+            model.redoMaskStroke()
+            XCTAssertEqual(try ImageCore.png(XCTUnwrap(model.reviewImage)), edited)
+            model.subjectMaskEnabled = false
+            XCTAssertEqual(try ImageCore.png(XCTUnwrap(model.reviewImage)), bytes)
+            model.subjectMaskEnabled = true
+            XCTAssertEqual(try ImageCore.png(XCTUnwrap(model.reviewImage)), edited)
+            model.maskTool = .erase
+            canvas.keyDown(with: key(53, in: editor))
+            XCTAssertEqual(model.maskTool, .view)
+            XCTAssertTrue(app.captureModel === model, "Escape leaves the brush before cancelling capture")
+            if screenCapture {
+                model.continueSelection(); model.undoSelection()
+                await model.correctionTask?.value
+                panel = try XCTUnwrap(NSApp.windows.first { $0.title == "Capture Preview" && $0.isVisible })
+                XCTAssertEqual(try ImageCore.png(XCTUnwrap(model.reviewImage)), edited)
+                XCTAssertTrue(panel.performKeyEquivalent(with: key(36, in: panel)))
+            } else {
+                canvas.keyDown(with: key(36, in: editor))
+            }
             model.confirm()
             XCTAssertNil(app.captureModel)
             XCTAssertEqual(app.store.clips.count, screenCapture ? 1 : 2, "Return saves exactly once")
+            XCTAssertEqual(try Data(contentsOf: app.store.url(for: XCTUnwrap(app.store.clips.first))), edited,
+                           "The main app must save the edited cutout without the cyan guide")
         }
         for closeButton in [false, true] {
             app.presentCanvas(image: image, frame: screen.visibleFrame, screenCapture: true, name: "Cancel test")
@@ -365,6 +417,8 @@ final class InteractionTests: XCTestCase {
         }
         let model = CanvasModel(image: artwork, isScreen: false, complete: { _ in }, cancel: {})
         try model.prepareReview(points: [CGPoint(x: 120, y: 90), CGPoint(x: 680, y: 90), CGPoint(x: 590, y: 530), CGPoint(x: 200, y: 470)])
+        await model.correctionTask?.value
+        model.maskTool = .restore
         let directory = URL(fileURLWithPath: destination, isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         func render(_ view: NSView, size: CGSize, name: String, appearance: NSAppearance.Name) async throws {
@@ -380,7 +434,7 @@ final class InteractionTests: XCTestCase {
             try XCTUnwrap(bitmap.representation(using: .png, properties: [:])).write(to: directory.appendingPathComponent(name + ".png"))
         }
         for (appearance, suffix): (NSAppearance.Name, String) in [(.aqua, "light"), (.darkAqua, "dark")] {
-            try await render(NSHostingView(rootView: CaptureReviewView(model: model, refine: {})),
+            try await render(NSHostingView(rootView: CaptureReviewView(model: model, refine: {}, touchUp: {})),
                              size: CGSize(width: 340, height: 350), name: "capture-review-" + suffix, appearance: appearance)
             try await render(NSHostingView(rootView: ShelfView(app: app)), size: CGSize(width: 340, height: 440), name: "shelf-" + suffix, appearance: appearance)
             try await render(NSHostingView(rootView: SettingsView(app: app)), size: CGSize(width: 460, height: 360), name: "settings-" + suffix, appearance: appearance)
@@ -388,6 +442,7 @@ final class InteractionTests: XCTestCase {
             try await render(NSHostingView(rootView: CaptureView(model: model)), size: CGSize(width: 960, height: 720), name: "cutout-" + suffix, appearance: appearance)
             model.showCutout = false
             try await render(NSHostingView(rootView: CaptureView(model: model)), size: CGSize(width: 960, height: 720), name: "original-" + suffix, appearance: appearance)
+            try await render(NSHostingView(rootView: CaptureView(model: model)), size: CGSize(width: 640, height: 420), name: "touch-up-small-" + suffix, appearance: appearance)
             for edge in ["left", "right"] {
                 app.shelf.snapEdge = edge
                 try await render(NSHostingView(rootView: ShelfView(app: app).background(Color(nsColor: .windowBackgroundColor))),

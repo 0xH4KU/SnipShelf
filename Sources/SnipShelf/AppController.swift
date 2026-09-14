@@ -284,8 +284,8 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
         panel.collectionBehavior = [.fullScreenAuxiliary, .moveToActiveSpace]
         panel.delegate = self
         panel.contentView = NSHostingView(rootView: CaptureReviewView(model: model, refine: { [weak self] in
-            self?.refineCapture()
-        }))
+            self?.editCapture(refineOutline: true)
+        }, touchUp: { [weak self] in self?.editCapture(refineOutline: false) }))
         panel.onKey = { [weak model] event in
             guard event.modifierFlags.intersection([.command, .control, .option, .shift]).isEmpty else { return false }
             switch event.keyCode {
@@ -306,11 +306,13 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
         canvasWindow.orderOut(nil)
         panel.makeKeyAndOrderFront(nil)
     }
-    func refineCapture() {
-        guard let model = captureModel, model.reviewing else { return }
+    func editCapture(refineOutline: Bool) {
+        guard let model = captureModel, model.reviewing, !model.paintingMask,
+              refineOutline || model.canTouchUp else { return }
         captureReviewWindow?.delegate = nil
         captureReviewWindow?.close(); captureReviewWindow = nil
-        model.continueSelection()
+        if refineOutline { model.continueSelection() }
+        else { model.showCutout = false; model.maskTool = .restore }
         captureWindow?.makeKeyAndOrderFront(nil)
     }
     private func restoreFocus() {

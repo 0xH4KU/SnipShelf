@@ -41,11 +41,9 @@ final class SnipLabController: NSObject, NSApplicationDelegate {
     }
 
     func showImage(_ image: CGImage, name: String) {
-        let next = CanvasModel(image: image, isScreen: false, preferences: preferences,
-            fluidDrawing: preferences.object(forKey: "labFluidDrawing") as? Bool ?? true, complete: { _ in }, cancel: {})
+        let next = CanvasModel(image: image, isScreen: false, preferences: preferences, complete: { _ in }, cancel: {})
         next.mode = model?.mode ?? .lasso
         next.showCutout = false
-        next.showRemovedAreas = preferences.object(forKey: "labShowRemovedAreas") as? Bool ?? true
         // A trial stays in memory; Return and Escape both prepare the same image for another try.
         next.complete = { [weak next] _ in next?.reset() }
         next.cancel = { [weak next] in next?.reset() }
@@ -139,68 +137,19 @@ struct SnipLabView: View {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 18) {
                         if !model.reviewing {
-                            VStack(alignment: .leading, spacing: 8) {
-                                Text("Drawing feel").font(.headline)
-                                Picker("Drawing feel", selection: $model.fluidDrawing) {
-                                    Text("Classic").tag(false)
-                                    Text("Fluid").tag(true)
-                                }.pickerStyle(.segmented).labelsHidden()
-                                Text(model.fluidDrawing
-                                    ? "Steady slow strokes, responsive sweeps. The start ring lights up when you can release to close. Option bypasses closing help."
-                                    : "The current app's drawing feel. Switch modes to compare on the same image.")
-                                    .font(.caption).foregroundStyle(.secondary)
-                            }.disabled(model.selecting)
                             SelectionAssistanceView(model: model).disabled(model.selecting)
                             HStack {
                                 Button("Raw") { model.smoothing = 0; model.snapEnabled = false; model.subjectMaskEnabled = false; model.fluidDrawing = false }
                                     .help("Turn off drawing assistance and the subject mask")
-                                Button("App Defaults") { model.smoothing = 0.55; model.snapEnabled = true; model.snapRadius = 10; model.subjectMaskEnabled = true; model.fluidDrawing = false }
+                                Button("App Defaults") { model.smoothing = 0.55; model.snapEnabled = true; model.snapRadius = 10; model.subjectMaskEnabled = true; model.fluidDrawing = true }
                                     .help("Restore the app's default assistance for the next stroke")
                             }.disabled(model.selecting)
                             Text("Drawing settings apply to your next stroke.")
                                 .font(.caption).foregroundStyle(.secondary)
                             Divider()
                         }
-                        if let image = model.reviewImage {
-                            Text("Selection preview").font(.headline)
-                            SubjectMaskControl(model: model).disabled(model.paintingMask)
-                            Image(nsImage: NSImage(cgImage: image, size: .zero))
-                                .resizable().scaledToFit().frame(maxWidth: .infinity).frame(height: 110)
-                                .background(.quaternary, in: RoundedRectangle(cornerRadius: 8))
-                                .accessibilityLabel("Trial cutout")
-                            Picker("Canvas preview", selection: $model.showCutout) {
-                                Text("Original").tag(false)
-                                Text("Cutout").tag(true)
-                            }.pickerStyle(.segmented).disabled(model.paintingMask)
-                            if !model.showCutout {
-                                VStack(alignment: .leading, spacing: 4) {
-                                    Toggle("Show removed areas", isOn: $model.showRemovedAreas).toggleStyle(.checkbox)
-                                    Text("Cyan stripes = removed · Original color = kept")
-                                        .font(.caption).foregroundStyle(.secondary)
-                                }.disabled(!model.canTouchUp || model.paintingMask)
-                            }
-                            VStack(alignment: .leading, spacing: 8) {
-                                Text("Manual touch-up").font(.headline)
-                                Picker("Touch-up tool", selection: $model.maskTool) {
-                                    ForEach(CanvasModel.MaskTool.allCases, id: \.self) { Text($0.rawValue).tag($0) }
-                                }.pickerStyle(.segmented).labelsHidden()
-                                if model.maskTool != .view {
-                                    HStack {
-                                        Text("Brush size")
-                                        Spacer()
-                                        Text("\(Int(model.brushSize)) px").foregroundStyle(.secondary).monospacedDigit()
-                                    }
-                                    Slider(value: $model.brushSize, in: 1...128, step: 1).accessibilityLabel("Brush size")
-                                    Text("[ / ] resize · Space-drag pans · ⌘Z undoes")
-                                        .font(.caption).foregroundStyle(.secondary)
-                                }
-                                Text(model.subjectMaskEnabled
-                                    ? "Restore brings back original pixels inside your lasso. Erase removes unwanted areas."
-                                    : "Turn on Subject mask to touch up the result.")
-                                    .font(.caption).foregroundStyle(.secondary)
-                            }.disabled(!model.canTouchUp || model.paintingMask)
-                            Text("\(image.width) × \(image.height) px · \(model.reviewPoints.count) points")
-                                .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                        if model.reviewing {
+                            SelectionReviewTools(model: model)
                             HStack {
                                 Button("Refine Outline") { model.continueSelection() }.disabled(model.paintingMask)
                                 Spacer()

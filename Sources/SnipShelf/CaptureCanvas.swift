@@ -18,7 +18,7 @@ final class CanvasModel {
     var smoothing: Double { didSet { preferences?.set(smoothing, forKey: "lassoSmoothing") } }
     var snapEnabled: Bool { didSet { preferences?.set(snapEnabled, forKey: "lassoSnap") } }
     var snapRadius: Double { didSet { preferences?.set(snapRadius, forKey: "lassoSnapRadius") } }
-    var fluidDrawing: Bool { didSet { preferences?.set(fluidDrawing, forKey: "labFluidDrawing") } }
+    var fluidDrawing: Bool { didSet { preferences?.set(fluidDrawing, forKey: "fluidDrawing") } }
     var maskTool: MaskTool = .view
     var brushSize: Double = 24
     private(set) var paintingMask = false
@@ -38,7 +38,7 @@ final class CanvasModel {
     let pixelEdges: PixelEdges?
     var reviewImage: CGImage?
     var showCutout = true
-    var showRemovedAreas = false { didSet { preferences?.set(showRemovedAreas, forKey: "labShowRemovedAreas") } }
+    var showRemovedAreas: Bool { didSet { preferences?.set(showRemovedAreas, forKey: "showRemovedAreas") } }
     var originalReviewImage: CGImage? { drawnReview?.image }
     private(set) var reviewPoints: [CGPoint] = []
     private(set) var reviewOrigin = CGPoint.zero
@@ -70,13 +70,16 @@ final class CanvasModel {
     var complete: (CGImage) -> Void
     var cancel: () -> Void
     @ObservationIgnored var reviewReady: (() -> Void)?
-    init(image: CGImage, isScreen: Bool, preferences: UserDefaults? = nil, fluidDrawing: Bool = false,
+    init(image: CGImage, isScreen: Bool, preferences: UserDefaults? = nil, fluidDrawing: Bool? = nil,
          subjectCutout: @escaping @Sendable (CGImage, [CGPoint]) throws -> CGImage? = { try SubjectMask.cutout($0, points: $1) },
          complete: @escaping (CGImage) -> Void, cancel: @escaping () -> Void) {
         session = CaptureSession(image: image)
         pixelEdges = PixelEdges(image)
         self.preferences = preferences
-        self.fluidDrawing = fluidDrawing
+        self.fluidDrawing = fluidDrawing ?? preferences?.object(forKey: "fluidDrawing") as? Bool
+            ?? preferences?.object(forKey: "labFluidDrawing") as? Bool ?? true
+        showRemovedAreas = preferences?.object(forKey: "showRemovedAreas") as? Bool
+            ?? preferences?.object(forKey: "labShowRemovedAreas") as? Bool ?? true
         self.subjectCutout = subjectCutout
         maskUndo.groupsByEvent = false
         smoothing = min(1, max(0, preferences?.object(forKey: "lassoSmoothing") as? Double ?? 0.55))
@@ -232,6 +235,7 @@ final class CanvasModel {
 struct CaptureReviewView: View {
     @Bindable var model: CanvasModel
     let refine: () -> Void
+    let touchUp: () -> Void
     var body: some View {
         VStack(spacing: 12) {
             if let image = model.reviewImage {
@@ -244,6 +248,7 @@ struct CaptureReviewView: View {
             SubjectMaskControl(model: model)
             HStack {
                 Button("Refine", action: refine).buttonStyle(.borderless)
+                Button("Touch Up", action: touchUp).buttonStyle(.borderless).disabled(!model.canTouchUp)
                 Spacer()
                 Button("Keep Clip") { model.confirm() }.buttonStyle(.borderedProminent)
                     .keyboardShortcut(.defaultAction).disabled(!model.canConfirm)
@@ -262,7 +267,58 @@ struct SubjectMaskControl: View {
                 if model.subjectMaskEnabled && model.correcting { ProgressView().controlSize(.mini) }
                 Text(model.correctionStatus).font(.caption).foregroundStyle(.secondary)
             }
-        }.frame(maxWidth: .infinity, alignment: .leading)
+        }.frame(maxWidth: .infinity, alignment: .leading).disabled(model.paintingMask)
+    }
+}
+
+struct SelectionReviewTools: View {
+    @Bindable var model: CanvasModel
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            Text("Selection preview").font(.headline)
+            SubjectMaskControl(model: model)
+            if let image = model.reviewImage {
+                Image(nsImage: NSImage(cgImage: image, size: .zero))
+                    .resizable().scaledToFit().frame(maxWidth: .infinity).frame(height: 110)
+                    .background(.quaternary, in: RoundedRectangle(cornerRadius: 8))
+                    .accessibilityLabel("Selected cutout")
+            }
+            Picker("Canvas preview", selection: $model.showCutout) {
+                Text("Original").tag(false)
+                Text("Cutout").tag(true)
+            }.pickerStyle(.segmented).disabled(model.paintingMask)
+            if !model.showCutout {
+                VStack(alignment: .leading, spacing: 4) {
+                    Toggle("Show removed areas", isOn: $model.showRemovedAreas).toggleStyle(.checkbox)
+                    Text("Cyan stripes = removed · Original color = kept")
+                        .font(.caption).foregroundStyle(.secondary)
+                }.disabled(!model.canTouchUp || model.paintingMask)
+            }
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Manual touch-up").font(.headline)
+                Picker("Touch-up tool", selection: $model.maskTool) {
+                    ForEach(CanvasModel.MaskTool.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+                }.pickerStyle(.segmented).labelsHidden()
+                if model.maskTool != .view {
+                    HStack {
+                        Text("Brush size")
+                        Spacer()
+                        Text("\(Int(model.brushSize)) px").foregroundStyle(.secondary).monospacedDigit()
+                    }
+                    Slider(value: $model.brushSize, in: 1...128, step: 1).accessibilityLabel("Brush size")
+                    Text("[ / ] resize · Space-drag pans · ⌘Z undoes")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                Text(model.subjectMaskEnabled
+                    ? "Restore brings back original pixels inside your lasso. Erase removes unwanted areas."
+                    : "Turn on Subject mask to touch up the result.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }.disabled(!model.canTouchUp || model.paintingMask)
+            if let image = model.reviewImage {
+                Text("\(image.width) × \(image.height) px · \(model.reviewPoints.count) points")
+                    .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+            }
+        }
     }
 }
 
@@ -272,88 +328,105 @@ struct CaptureView: View {
     @State private var toolbarStart = CGSize.zero
     @State private var showAssist = false
     var body: some View {
-        GeometryReader { geometry in
-            GlassEffectContainer(spacing: 16) {
-                ZStack(alignment: .top) {
-                    SelectionCanvas(model: model)
-                    VStack(spacing: 10) {
-                        HStack(spacing: 14) {
-                            Image(systemName: "line.3.horizontal").foregroundStyle(.secondary)
-                                .frame(width: 24, height: 28).contentShape(Rectangle())
-                                .accessibilityLabel("Move selection toolbar")
-                                .help("Drag to move the toolbar")
-                                .gesture(DragGesture(coordinateSpace: .named("captureCanvas")).onChanged { value in
-                                    let limitX = max(0, (geometry.size.width - 600) / 2)
-                                    toolbarOffset = CGSize(width: min(limitX, max(-limitX, toolbarStart.width + value.translation.width)),
-                                                           height: min(max(0, geometry.size.height - 200), max(0, toolbarStart.height + value.translation.height)))
-                                }.onEnded { _ in toolbarStart = toolbarOffset })
-                            if model.reviewing {
-                                Picker("Review", selection: $model.showCutout) {
-                                    Text("Original").tag(false)
-                                    Text("Cutout").tag(true)
-                                }.pickerStyle(.segmented).labelsHidden().frame(width: 160)
-                            } else {
-                                Picker("Selection", selection: $model.mode) {
-                                    ForEach(CanvasModel.Mode.allCases, id: \.self) { Text($0.rawValue).tag($0) }
-                                }.pickerStyle(.segmented).labelsHidden().frame(width: 160).disabled(model.selecting)
-                            }
-                            Button { showAssist.toggle() } label: { Image(systemName: "wand.and.stars") }
-                                .help("Selection assistance").accessibilityLabel("Selection assistance")
-                                .disabled(model.selecting).popover(isPresented: $showAssist) {
-                                    SelectionAssistanceView(model: model).padding(20).frame(width: 270)
+        HStack(spacing: 0) {
+            GeometryReader { geometry in
+                GlassEffectContainer(spacing: 16) {
+                    ZStack(alignment: .top) {
+                        SelectionCanvas(model: model)
+                        VStack(spacing: 10) {
+                            HStack(spacing: 14) {
+                                if !model.reviewing {
+                                    Image(systemName: "line.3.horizontal").foregroundStyle(.secondary)
+                                        .frame(width: 24, height: 28).contentShape(Rectangle())
+                                        .accessibilityLabel("Move selection toolbar")
+                                        .help("Drag to move the toolbar")
+                                        .gesture(DragGesture(coordinateSpace: .named("captureCanvas")).onChanged { value in
+                                            let limitX = max(0, (geometry.size.width - 600) / 2)
+                                            toolbarOffset = CGSize(width: min(limitX, max(-limitX, toolbarStart.width + value.translation.width)),
+                                                                   height: min(max(0, geometry.size.height - 200), max(0, toolbarStart.height + value.translation.height)))
+                                        }.onEnded { _ in toolbarStart = toolbarOffset })
+                                    Picker("Selection", selection: $model.mode) {
+                                        ForEach(CanvasModel.Mode.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+                                    }.pickerStyle(.segmented).labelsHidden().frame(width: 160).disabled(model.selecting)
+                                    Button { showAssist.toggle() } label: { Image(systemName: "wand.and.stars") }
+                                        .help("Selection assistance").accessibilityLabel("Selection assistance")
+                                        .disabled(model.selecting).popover(isPresented: $showAssist) {
+                                            SelectionAssistanceView(model: model).padding(20).frame(width: 270)
+                                        }
+                                    Divider().frame(height: 18)
                                 }
-                            Divider().frame(height: 18)
-                            Button("Fit") { model.fit() }.help("Fit image").disabled(model.selecting)
-                            Button("100%") { model.actualSize = true; model.scale = 1; model.offset = .zero }.disabled(model.selecting)
-                            Button { model.scale = max(0.1, model.scale / 1.25) } label: { Image(systemName: "minus.magnifyingglass") }
-                                .help("Zoom out").accessibilityLabel("Zoom out").disabled(model.selecting)
-                            Button { model.scale = min(16, model.scale * 1.25) } label: { Image(systemName: "plus.magnifyingglass") }
-                                .help("Zoom in").accessibilityLabel("Zoom in").disabled(model.selecting)
-                            Divider().frame(height: 18)
-                            Button { model.undoSelection() } label: { Image(systemName: "arrow.uturn.backward") }
-                                .help("Undo last refinement (⌘Z)").accessibilityLabel("Undo last refinement")
-                                .disabled(model.previousOutline == nil).keyboardShortcut("z", modifiers: .command)
-                            Button { model.cancel() } label: { Image(systemName: "xmark") }
-                                .help("Cancel (Esc)").accessibilityLabel("Cancel capture").keyboardShortcut(.cancelAction)
-                        }.buttonStyle(.borderless).controlSize(.regular)
-                            .padding(.horizontal, 16).padding(.vertical, 12)
-                            .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 18))
-                        Text(hint)
-                            .font(.callout).foregroundStyle(model.error == nil ? Color.secondary : Color.primary)
-                            .padding(.horizontal, 14).padding(.vertical, 7)
-                            .background(.regularMaterial, in: Capsule()).allowsHitTesting(false)
-                    }.padding(.top, 18).offset(toolbarOffset)
-                    VStack {
-                        Spacer()
-                        if model.reviewing {
-                            VStack(spacing: 10) {
-                                SubjectMaskControl(model: model)
-                                HStack(spacing: 12) {
-                                    Button("Redraw", systemImage: "arrow.counterclockwise") { model.reset() }
-                                        .help("Start again · ⌘Z restores this outline")
-                                    Button("Refine", systemImage: "pencil.tip") { model.continueSelection() }
-                                        .help("Drag from the outline to retrace · ⌘Z restores the previous outline")
-                                    Divider().frame(height: 22)
-                                    Button("Keep Clip", systemImage: "checkmark") { model.confirm() }
-                                        .buttonStyle(.glassProminent).keyboardShortcut(.defaultAction)
-                                        .disabled(!model.canConfirm)
-                                        .help("Save this cutout to the shelf (Return)")
-                                }.buttonStyle(.bordered).controlSize(.large)
-                            }.fixedSize(horizontal: true, vertical: false)
-                                .padding(12).glassEffect(.regular, in: RoundedRectangle(cornerRadius: 22))
-                        } else if model.hasOutline {
-                            Button("Redraw", systemImage: "arrow.counterclockwise") { model.reset() }
-                                .buttonStyle(.glass).controlSize(.large)
-                        }
-                    }.padding(.bottom, 22)
+                                Button("Fit") { model.fit() }.help("Fit image").disabled(model.selecting)
+                                Button("100%") { model.actualSize = true; model.scale = 1; model.offset = .zero }.disabled(model.selecting)
+                                Button { model.scale = max(0.1, model.scale / 1.25) } label: { Image(systemName: "minus.magnifyingglass") }
+                                    .help("Zoom out").accessibilityLabel("Zoom out").disabled(model.selecting)
+                                Button { model.scale = min(16, model.scale * 1.25) } label: { Image(systemName: "plus.magnifyingglass") }
+                                    .help("Zoom in").accessibilityLabel("Zoom in").disabled(model.selecting)
+                                if !model.reviewing {
+                                    Divider().frame(height: 18)
+                                    Button { model.undoSelection() } label: { Image(systemName: "arrow.uturn.backward") }
+                                        .help("Undo last refinement (⌘Z)").accessibilityLabel("Undo last refinement")
+                                        .disabled(!model.canUndo).keyboardShortcut("z", modifiers: .command)
+                                    Button { model.cancel() } label: { Image(systemName: "xmark") }
+                                        .help("Cancel (Esc)").accessibilityLabel("Cancel capture").keyboardShortcut(.cancelAction)
+                                }
+                            }.buttonStyle(.borderless).controlSize(.regular).disabled(model.paintingMask)
+                                .padding(.horizontal, 16).padding(.vertical, 12)
+                                .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 18))
+                            if !model.reviewing {
+                                Text(hint)
+                                    .font(.callout).foregroundStyle(model.error == nil ? Color.secondary : Color.primary)
+                                    .padding(.horizontal, 14).padding(.vertical, 7)
+                                    .background(.regularMaterial, in: Capsule()).allowsHitTesting(false)
+                            }
+                        }.padding(.top, 18).offset(model.reviewing ? .zero : toolbarOffset)
+                        VStack {
+                            Spacer()
+                            if !model.reviewing && model.hasOutline {
+                                Button("Redraw", systemImage: "arrow.counterclockwise") { model.reset() }
+                                    .buttonStyle(.glass).controlSize(.large)
+                            }
+                        }.padding(.bottom, 22)
+                    }
                 }
+            }.coordinateSpace(name: "captureCanvas")
+                .task { await model.analyzeEdges() }
+            if model.reviewing {
+                Divider()
+                VStack(spacing: 0) {
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 18) {
+                            SelectionReviewTools(model: model)
+                            HStack {
+                                Button("Refine Outline") { model.continueSelection() }
+                                Button("Redraw") { model.reset() }
+                            }.disabled(model.paintingMask)
+                            HStack {
+                                Button("Undo") { model.undoSelection() }
+                                    .keyboardShortcut("z", modifiers: .command).disabled(!model.canUndo)
+                                Button("Redo") { model.redoMaskStroke() }
+                                    .keyboardShortcut("z", modifiers: [.command, .shift])
+                                    .disabled(!model.canTouchUp || !model.canRedoMask || model.paintingMask)
+                            }
+                            if let error = model.error { Text(error).foregroundStyle(.red).textSelection(.enabled) }
+                            Text("\(model.editingMask ? "Esc finishes touch-up" : "Esc cancels") · Return keeps the clip")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }.padding(20).frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    Divider()
+                    HStack {
+                        Button(model.editingMask ? "Done" : "Cancel") {
+                            if model.editingMask { model.leaveMaskEditing() } else { model.cancel() }
+                        }.keyboardShortcut(.cancelAction)
+                        Spacer()
+                        Button("Keep Clip") { model.confirm() }
+                            .buttonStyle(.borderedProminent).keyboardShortcut(.defaultAction).disabled(!model.canConfirm)
+                    }.padding(14)
+                }.frame(width: 300).background(.regularMaterial)
             }
-        }.coordinateSpace(name: "captureCanvas")
-            .task { await model.analyzeEdges() }
+        }
     }
     private var hint: String {
         if let error = model.error { return error }
-        if model.reviewing { return "Compare the cutout · Refine the edge · Return to keep" }
         if model.previousOutline != nil && model.selecting { return "Retrace or redraw · ⌘Z restores the previous outline" }
         return model.mode == .lasso ? "Draw around an element · Release to review · ⌥ bypasses edge help" : "Click to add points · Return to review · Delete to undo"
     }
@@ -365,6 +438,16 @@ struct SelectionAssistanceView: View {
         VStack(alignment: .leading, spacing: 16) {
             Text("Selection Assistance").font(.headline)
             Text(model.edgeStatus).font(.caption).foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: 8) {
+                Picker("Drawing feel", selection: $model.fluidDrawing) {
+                    Text("Classic").tag(false)
+                    Text("Fluid").tag(true)
+                }.pickerStyle(.segmented)
+                Text(model.fluidDrawing
+                    ? "Steady slow strokes, responsive sweeps. The start ring lights up when you can release to close. Option bypasses closing help."
+                    : "Classic stabilization without closing help.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }.disabled(model.selecting)
             Picker("Tool", selection: $model.mode) {
                 ForEach(CanvasModel.Mode.allCases, id: \.self) { Text($0.rawValue).tag($0) }
             }.pickerStyle(.segmented).disabled(model.hasOutline)
@@ -433,7 +516,7 @@ final class CanvasNSView: NSView {
         setAccessibilityElement(true)
         setAccessibilityRole(.image)
         setAccessibilityLabel("Image selection canvas")
-        setAccessibilityHelp("Choose Lasso and draw freely, or Polygon and click points. Release or press Return to review. Compare Original and Cutout. Keep Clip saves; Refine retraces; Redraw clears the outline. Command-Z restores the previous outline. Escape cancels.")
+        setAccessibilityHelp("Choose Lasso and draw freely, or Polygon and click points. Release or press Return to review. Restore and Erase touch up the mask. Cyan stripes mark removed pixels in Original view. Space-drag pans; brackets resize the brush; Command-Z undoes. Keep Clip saves; Refine Outline retraces; Redraw clears the outline. Escape leaves the brush or cancels capture.")
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
     override func viewDidMoveToWindow() { super.viewDidMoveToWindow(); window?.makeFirstResponder(self) }

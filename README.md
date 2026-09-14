@@ -10,8 +10,8 @@ Draw around part of an image, review the transparent cutout, and keep it nearby 
 
 ## Features
 
-- Freehand lasso with adaptive stabilization and gentle edge assistance that yields to your gesture.
-- Default-on native subject masks in review, with an instant switch back to the original cutout.
+- Fluid freehand lasso with adaptive stabilization, closing assistance, and gentle edge help.
+- Default-on native subject masks, Restore/Erase touch-up brushes, and a guide showing removed pixels.
 - Polygon selection, zoom and pan, compact cutout confirmation, refinement undo, and Redraw / Refine / Keep Clip controls.
 - A floating shelf that tucks against the screen edge, with multi-selection, a resizable image preview, clipboard support, and deletion undo.
 - PNG cutouts with transparency, stored locally and available to other apps through copy and drag.
@@ -44,14 +44,14 @@ selection using Apple Vision; turn off **Subject mask** to restore the original 
 the next try; Escape redraws.
 Settings are saved separately and trial cutouts stay in memory.
 
-Lab starts in **Fluid** drawing mode. Switch **Drawing feel** between Classic and
+Both the main app and Lab start in **Fluid** drawing mode. Switch **Drawing feel** between Classic and
 Fluid to compare on the same image, and use Steadiness to tune either mode.
 Fluid adjusts smoothing by elapsed time and pointer speed, lands at the release
 position, and lights the start ring when releasing will close the lasso. Hold
-Option to bypass closing help. These drawing changes are being tested in Lab;
-the main app still uses Classic.
+Option to bypass closing help. In the main app, Drawing feel is in the wand menu.
 
-In Lab review, **Manual touch-up** adds **Restore** and **Erase** brushes. Restore
+The main app’s **Capture Preview → Touch Up** and Lab share the same review
+controls. **Manual touch-up** offers **Restore** and **Erase** brushes. Restore
 brings back original pixels inside the lasso; Erase removes unwanted areas.
 Zoom in for detail, adjust brush size in source pixels (or use `[` / `]`), and
 hold Space while dragging to pan. Command–Z undoes a whole stroke;
