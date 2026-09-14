@@ -45,6 +45,7 @@ final class SnipLabController: NSObject, NSApplicationDelegate {
             fluidDrawing: preferences.object(forKey: "labFluidDrawing") as? Bool ?? true, complete: { _ in }, cancel: {})
         next.mode = model?.mode ?? .lasso
         next.showCutout = false
+        next.showRemovedAreas = preferences.object(forKey: "labShowRemovedAreas") as? Bool ?? true
         // A trial stays in memory; Return and Escape both prepare the same image for another try.
         next.complete = { [weak next] _ in next?.reset() }
         next.cancel = { [weak next] in next?.reset() }
@@ -171,6 +172,13 @@ struct SnipLabView: View {
                                 Text("Original").tag(false)
                                 Text("Cutout").tag(true)
                             }.pickerStyle(.segmented).disabled(model.paintingMask)
+                            if !model.showCutout {
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Toggle("Show removed areas", isOn: $model.showRemovedAreas).toggleStyle(.checkbox)
+                                    Text("Cyan stripes = removed · Original color = kept")
+                                        .font(.caption).foregroundStyle(.secondary)
+                                }.disabled(!model.canTouchUp || model.paintingMask)
+                            }
                             VStack(alignment: .leading, spacing: 8) {
                                 Text("Manual touch-up").font(.headline)
                                 Picker("Touch-up tool", selection: $model.maskTool) {

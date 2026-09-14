@@ -3,6 +3,86 @@ import AppKit
 @testable import SnipShelf
 
 final class MaskBrushTests: XCTestCase {
+    func testRemovedPixelsMeasureAlphaLossWithoutMarkingExistingTransparency() throws {
+        let helper = SnipShelfTests()
+        let before = try ImageCore.context(width: 40, height: 30)
+        before.setFillColor(CGColor(gray: 1, alpha: 1)); before.fill(CGRect(x: 0, y: 0, width: 40, height: 30))
+        before.clear(CGRect(x: 4, y: 4, width: 6, height: 6))
+        before.setBlendMode(.copy)
+        before.setFillColor(CGColor(gray: 1, alpha: 0.5)); before.fill(CGRect(x: 15, y: 15, width: 10, height: 10))
+        let original = try XCTUnwrap(before.makeImage())
+        let after = try ImageCore.context(width: 40, height: 30)
+        after.draw(original, in: CGRect(x: 0, y: 0, width: 40, height: 30))
+        let unchanged = try XCTUnwrap(ImageCore.removedPixels(original: original, current: XCTUnwrap(after.makeImage())))
+        for p in [(3, 3), (22, 10), (6, 23)] { XCTAssertEqual(helper.color(unchanged, p.0, p.1).alphaComponent, 0) }
+        after.clear(CGRect(x: 28, y: 18, width: 8, height: 8))
+        after.setBlendMode(.copy)
+        after.setFillColor(CGColor(gray: 1, alpha: 0.25)); after.fill(CGRect(x: 15, y: 15, width: 5, height: 10))
+        let removed = try XCTUnwrap(ImageCore.removedPixels(original: original, current: XCTUnwrap(after.makeImage())))
+        XCTAssertEqual(helper.color(removed, 31, 7).alphaComponent, 1)
+        XCTAssertEqual(helper.color(removed, 17, 10).alphaComponent, 0.25, accuracy: 0.01)
+        XCTAssertEqual(helper.color(removed, 22, 10).alphaComponent, 0, "Unchanged semi-transparent pixels are not mask mistakes")
+        XCTAssertEqual(helper.color(removed, 6, 23).alphaComponent, 0, "Existing holes must not be highlighted")
+        XCTAssertEqual(helper.color(removed, 12, 20).alphaComponent, 0)
+        XCTAssertThrowsError(try ImageCore.removedPixels(original: original, current: helper.image()))
+    }
+
+    @MainActor func testRemovedOverlayAlignsWithBrushChangesAndNeverChangesTheSavedImage() async throws {
+        _ = NSApplication.shared
+        let context = try ImageCore.context(width: 100, height: 100)
+        context.setFillColor(CGColor(srgbRed: 0.6, green: 0.1, blue: 0.05, alpha: 1))
+        context.fill(CGRect(x: 0, y: 0, width: 100, height: 100))
+        var saved: CGImage?
+        let model = CanvasModel(image: try XCTUnwrap(context.makeImage()), isScreen: false,
+            subjectCutout: { try ImageCore.crop($0, points: $1) }, complete: { saved = $0 }, cancel: {})
+        try model.prepareReview(points: SnipShelfTests().rect(20, 20, 60, 60))
+        await model.correctionTask?.value
+        model.showCutout = false; model.maskTool = .erase; model.brushSize = 14
+        let point = CGPoint(x: 35, y: 28)
+        model.beginMaskStroke(at: point); model.endMaskStroke()
+        let output = try ImageCore.png(XCTUnwrap(model.reviewImage))
+        let view = CanvasNSView(model: model)
+        view.frame = CGRect(x: 0, y: 0, width: 300, height: 300)
+        func render() throws -> NSBitmapImageRep {
+            view.refresh()
+            let bitmap = try XCTUnwrap(view.bitmapImageRepForCachingDisplay(in: view.bounds))
+            view.cacheDisplay(in: view.bounds, to: bitmap)
+            return bitmap
+        }
+        func color(_ bitmap: NSBitmapImageRep, _ p: CGPoint) -> NSColor {
+            let rect = view.imageRect
+            let x = (rect.minX + p.x * rect.width / 100) * CGFloat(bitmap.pixelsWide) / view.bounds.width
+            let y = (rect.minY + p.y * rect.height / 100) * CGFloat(bitmap.pixelsHigh) / view.bounds.height
+            return bitmap.colorAt(x: Int(x), y: Int(y))!.usingColorSpace(.sRGB)!
+        }
+        for zoom: CGFloat in [1, 1.2] {
+            model.scale = zoom; model.offset = CGPoint(x: 6, y: -12)
+            model.showRemovedAreas = false
+            let plain = try render()
+            model.showRemovedAreas = true
+            let marked = try render()
+            XCTAssertGreaterThan(color(marked, point).blueComponent, color(plain, point).blueComponent + 0.2,
+                "Removed areas must be visibly distinct on a red background")
+            for kept in [CGPoint(x: 60, y: 30), CGPoint(x: 35, y: 72), CGPoint(x: 15, y: 50)] {
+                XCTAssertEqual(color(marked, kept), color(plain, kept), "Kept pixels, mirrored coordinates and points outside the lasso must stay unchanged")
+            }
+            model.maskTool = .restore; model.beginMaskStroke(at: point)
+            XCTAssertLessThan(color(try render(), point).blueComponent, 0.15, "Overlay must update during the stroke")
+            model.cancelMaskStroke()
+        }
+        model.showCutout = true
+        let cutout = try ImageCore.png(XCTUnwrap(render().cgImage))
+        model.showRemovedAreas = false
+        XCTAssertEqual(try ImageCore.png(XCTUnwrap(render().cgImage)), cutout, "The Cutout view must stay free of overlay marks")
+        model.subjectMaskEnabled = false; model.showCutout = false; model.showRemovedAreas = true
+        let raw = try render()
+        model.showRemovedAreas = false
+        XCTAssertEqual(try ImageCore.png(XCTUnwrap(render().cgImage)), try ImageCore.png(XCTUnwrap(raw.cgImage)))
+        model.subjectMaskEnabled = true; model.showRemovedAreas = true
+        model.confirm()
+        XCTAssertEqual(try ImageCore.png(XCTUnwrap(saved)), output)
+    }
+
     func testBrushRestoresOriginalAlphaAndConnectsSparseEventsInsideTheLasso() throws {
         let helper = SnipShelfTests()
         let context = try ImageCore.context(width: 100, height: 80)

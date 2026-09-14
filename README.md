@@ -57,6 +57,10 @@ Zoom in for detail, adjust brush size in source pixels (or use `[` / `]`), and
 hold Space while dragging to pan. Command–Z undoes a whole stroke;
 Command–Shift–Z redoes it. **Done** or Escape leaves the brush without clearing
 the selection. Switching Subject mask off and back on preserves your touch-ups.
+In **Original** view, **Show removed areas** is on by default: cyan stripes mark
+pixels removed inside your lasso, including brush edits, while kept pixels retain
+their original colors. Toggle it off for an unobstructed comparison. This guide
+never appears in Cutout or the saved PNG.
 **Refine Outline** still changes the lasso and computes a new mask; its undo
 restores the previous outline and touch-ups together.
 

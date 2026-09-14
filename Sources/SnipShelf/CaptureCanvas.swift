@@ -38,6 +38,8 @@ final class CanvasModel {
     let pixelEdges: PixelEdges?
     var reviewImage: CGImage?
     var showCutout = true
+    var showRemovedAreas = false { didSet { preferences?.set(showRemovedAreas, forKey: "labShowRemovedAreas") } }
+    var originalReviewImage: CGImage? { drawnReview?.image }
     private(set) var reviewPoints: [CGPoint] = []
     private(set) var reviewOrigin = CGPoint.zero
     private typealias Outline = (points: [CGPoint], image: CGImage)
@@ -388,7 +390,7 @@ struct SelectionCanvas: NSViewRepresentable {
     func makeNSView(context: Context) -> CanvasNSView { CanvasNSView(model: model) }
     func updateNSView(_ view: CanvasNSView, context: Context) {
         _ = model.scale; _ = model.offset; _ = model.actualSize; _ = model.mode; _ = model.resetToken; _ = model.edgeMap; _ = model.reviewImage; _ = model.resumeToken; _ = model.restoreToken; _ = model.showCutout; _ = model.snapEnabled
-        _ = model.maskTool; _ = model.brushSize
+        _ = model.maskTool; _ = model.brushSize; _ = model.showRemovedAreas
         view.refresh()
     }
 }
@@ -410,6 +412,8 @@ final class CanvasNSView: NSView {
     private var seenRestore = 0
     private var reviewPicture: NSImage?
     private var displayedReview: CGImage?
+    private var removalMask: CGImage?
+    private var removalPreviewFor: CGImage?
     private var continuing = false
     private var draggingLasso = false
     private var fluidStroke = false
@@ -469,6 +473,13 @@ final class CanvasNSView: NSView {
             if model.reviewing { points = model.reviewPoints }
             displayedReview = model.reviewImage
             reviewPicture = model.reviewImage.map { NSImage(cgImage: $0, size: .zero) }
+            removalMask = nil; removalPreviewFor = nil
+        }
+        if model.showRemovedAreas, model.canTouchUp, !model.showCutout,
+           let image = model.reviewImage, let original = model.originalReviewImage, removalPreviewFor !== image {
+            removalPreviewFor = image
+            do { removalMask = try ImageCore.removedPixels(original: original, current: image) }
+            catch { model.error = error.localizedDescription }
         }
         needsDisplay = true
     }
@@ -554,6 +565,7 @@ final class CanvasNSView: NSView {
                               size: CGSize(width: CGFloat(image.width) / pixelsPerPoint, height: CGFloat(image.height) / pixelsPerPoint))
             reviewPicture?.draw(in: rect, from: .zero, operation: .sourceOver, fraction: 1,
                                 respectFlipped: true, hints: [.interpolation: NSImageInterpolation.high])
+            drawRemovedAreas(in: rect)
         }
         if !points.isEmpty {
             path.lineJoinStyle = .round; path.lineCapStyle = .round
@@ -588,6 +600,27 @@ final class CanvasNSView: NSView {
             NSColor.controlAccentColor.setStroke()
             let ring = NSBezierPath(ovalIn: CGRect(x: p.x - 5, y: p.y - 5, width: 10, height: 10))
             ring.lineWidth = 2; ring.stroke()
+        }
+    }
+    private func drawRemovedAreas(in rect: CGRect) {
+        guard model.showRemovedAreas, model.canTouchUp, let removalMask,
+              let context = NSGraphicsContext.current?.cgContext else { return }
+        NSGraphicsContext.saveGraphicsState()
+        defer { NSGraphicsContext.restoreGraphicsState() }
+        // Register the mask with the top-left image coordinates, then draw stripes in screen points.
+        context.translateBy(x: rect.minX, y: rect.maxY); context.scaleBy(x: 1, y: -1)
+        context.clip(to: CGRect(origin: .zero, size: rect.size), mask: removalMask)
+        context.scaleBy(x: 1, y: -1); context.translateBy(x: -rect.minX, y: -rect.maxY)
+        NSColor(calibratedRed: 0, green: 0.8, blue: 1, alpha: 0.45).setFill(); rect.fill()
+        let visible = rect.intersection(bounds)
+        if !visible.isNull {
+            let stripes = NSBezierPath()
+            for x in stride(from: visible.minX - visible.height, through: visible.maxX, by: 12) {
+                stripes.move(to: CGPoint(x: x, y: visible.maxY))
+                stripes.line(to: CGPoint(x: x + visible.height, y: visible.minY))
+            }
+            NSColor(calibratedRed: 0.55, green: 1, blue: 1, alpha: 0.8).setStroke()
+            stripes.lineWidth = 1.5; stripes.stroke()
         }
     }
     private func drawMaskCursor() {

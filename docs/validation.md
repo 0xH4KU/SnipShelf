@@ -12,7 +12,7 @@ DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test
 codesign --verify --strict dist/SnipShelf.app
 ```
 
-The suite contains **43 behavioral tests** plus one optional interface-rendering check covering:
+The suite contains **45 behavioral tests** plus one optional interface-rendering check covering:
 
 | Area | Coverage |
 | --- | --- |
@@ -24,6 +24,7 @@ The suite contains **43 behavioral tests** plus one optional interface-rendering
 | Snip Lab | Classic/Fluid comparison with settings retained across images, repeated strokes on the real canvas, in-window review matching exported crop pixels, Refine/Undo, Next Try and Escape resetting the same source, and unreadable files preserving the current trial. |
 | Fluid drawing experiment | Timestamp-based smoothing at 60, 120, 240 and 1000 Hz, scale equivalence, immediate start, bounded lag, deliberate fast sweeps, and stale-velocity reset after pauses. Native canvas events cover the closing cue, 9-screen-point closing reach at different zoom levels, Option bypass, exact release endpoints, and refinement/export consistency. Enabled by default in Lab; the main app remains on Classic. |
 | Manual mask touch-up in Lab | Restore/Erase connect sparse pointer events and preserve source colors, partial alpha, transparency and the lasso boundary. Whole-stroke undo/redo, toggle preservation, cancelled strokes, pending-recognition guards, empty-result rollback, refinement undo and exact saved pixels are covered. Native canvas events verify brush registration in Original/Cutout at different zooms, Space-drag panning without painting, Escape leaving the brush, and keyboard undo/redo. |
+| Removed-area guide in Lab | Native renders verify visible cyan hatching on a red background, correct crop/zoom registration, no markings on retained pixels or outside the lasso, and immediate brush updates. Alpha-loss checks distinguish removed pixels from original transparency and soft alpha. Cutout rendering and saved PNGs stay unchanged; the guide preference survives opening another image. |
 | Image processing | Coordinate mapping, orientation, concave and self-intersecting selections, invalid input, transparency, anti-aliasing, and PNG round-trips. |
 | Local storage | New-clip selection and failed-save selection preservation, persistence, deletion/undo, batch deletion with newer clips, missing assets, failed writes, corrupt index recovery, and 100 mixed-size clips. |
 | Drag import | Internal drags are rejected without writes; independent external PNG drops still import. |
@@ -120,6 +121,15 @@ outputs are under ignored `.local/mask-touchup/`. These checks exercise editing
 and pixel preservation, not segmentation accuracy or physical pointer feel.
 The rebuilt Lab launched successfully. A fresh direct Computer Use request for
 its app state timed out, so live pointer QA remains unverified.
+
+The removed-area guide was rendered on the supplied red-background artwork
+using its local source file and a reconstructed coarse lasso. The guide compares
+original and current alpha with [Core Image filters](https://developer.apple.com/documentation/coreimage/cifilter-swift.class/subtractblendmode%28%29),
+then draws cyan hatching in canvas coordinates; it never modifies export pixels.
+On that roughly 356k-pixel selection, 30 brush updates plus native-view refreshes
+took 62 ms in a debug build, compared with 793 ms for the initial scalar loop.
+This measures that update path, not end-to-end frame timing or physical mouse
+latency. Native renders and the probe are under ignored `.local/removed-overlay/`.
 
 ## Previous manual checks
 

@@ -21,6 +21,7 @@ struct CaptureSession {
 enum ImageCore {
     static let colorSpace = CGColorSpace(name: CGColorSpace.sRGB)!
     static let maxPixels = 100_000_000
+    private static let overlayContext = CIContext(options: [.workingColorSpace: NSNull(), .cacheIntermediates: false])
 
     static func load(_ url: URL) throws -> CGImage {
         guard let source = CGImageSourceCreateWithURL(url as CFURL, nil) else {
@@ -114,6 +115,29 @@ enum ImageCore {
             if alphaSum >= 9 * 255 { return true }
         }
         return false
+    }
+
+    static func removedPixels(original: CGImage, current: CGImage) throws -> CGImage? {
+        guard original.width == current.width, original.height == current.height else {
+            throw ShelfError("The removed-area preview does not match this selection.")
+        }
+        if original === current { return nil }
+        let zero = CIVector(x: 0, y: 0, z: 0, w: 0)
+        let alpha = CIVector(x: 0, y: 0, z: 0, w: 1)
+        // Put alpha into an opaque red channel so subtraction measures alpha loss,
+        // including soft edges, without mistaking pre-existing transparency for removal.
+        let extract: [String: Any] = ["inputRVector": alpha, "inputGVector": zero, "inputBVector": zero,
+                                      "inputAVector": zero, "inputBiasVector": alpha]
+        let before = CIImage(cgImage: original).applyingFilter("CIColorMatrix", parameters: extract)
+        let after = CIImage(cgImage: current).applyingFilter("CIColorMatrix", parameters: extract)
+        let difference = after.applyingFilter("CISubtractBlendMode", parameters: ["inputBackgroundImage": before])
+        let mask = difference.applyingFilter("CIColorMatrix", parameters: ["inputRVector": zero,
+            "inputGVector": zero, "inputBVector": zero, "inputAVector": CIVector(x: 1, y: 0, z: 0, w: 0)])
+        let rect = CGRect(x: 0, y: 0, width: original.width, height: original.height)
+        guard let image = overlayContext.createCGImage(mask, from: rect, format: .RGBA8, colorSpace: colorSpace) else {
+            throw ShelfError("The removed-area preview could not be rendered.")
+        }
+        return image
     }
 
     static func png(_ image: CGImage) throws -> Data {
