@@ -28,7 +28,7 @@ final class InteractionTests: XCTestCase {
             try await Task.sleep(for: .milliseconds(80))
             let canvas = try XCTUnwrap(descendants(XCTUnwrap(editor.contentView)).compactMap { $0 as? CanvasNSView }.first)
             model.scale = 1.2; model.offset = CGPoint(x: 12, y: -18)
-            model.smoothing = 0; model.snapEnabled = false
+            model.smoothing = 0; model.snapEnabled = false; model.subjectMaskEnabled = false
             let stroke = [CGPoint(x: 250, y: 200), CGPoint(x: 650, y: 200), CGPoint(x: 600, y: 320), CGPoint(x: 260, y: 300)]
             func mouse(_ type: NSEvent.EventType, _ pixel: CGPoint) -> NSEvent {
                 let rect = canvas.imageRect
@@ -203,7 +203,7 @@ final class InteractionTests: XCTestCase {
     @MainActor func testRefinementUndoRestoresTheRenderedOutlineAndPixels() async throws {
         _ = NSApplication.shared
         let model = CanvasModel(image: try SnipShelfTests().image(width: 100, height: 100), isScreen: false, complete: { _ in }, cancel: {})
-        model.smoothing = 0; model.snapEnabled = false
+        model.smoothing = 0; model.snapEnabled = false; model.subjectMaskEnabled = false
         let view = CanvasNSView(model: model)
         let window = NSWindow(contentRect: CGRect(x: 0, y: 0, width: 400, height: 400), styleMask: .borderless, backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false; window.contentView = view
@@ -380,8 +380,8 @@ final class InteractionTests: XCTestCase {
             try XCTUnwrap(bitmap.representation(using: .png, properties: [:])).write(to: directory.appendingPathComponent(name + ".png"))
         }
         for (appearance, suffix): (NSAppearance.Name, String) in [(.aqua, "light"), (.darkAqua, "dark")] {
-            try await render(NSHostingView(rootView: CaptureReviewView(image: XCTUnwrap(model.reviewImage), refine: {}, confirm: {})),
-                             size: CGSize(width: 340, height: 300), name: "capture-review-" + suffix, appearance: appearance)
+            try await render(NSHostingView(rootView: CaptureReviewView(model: model, refine: {})),
+                             size: CGSize(width: 340, height: 350), name: "capture-review-" + suffix, appearance: appearance)
             try await render(NSHostingView(rootView: ShelfView(app: app)), size: CGSize(width: 340, height: 440), name: "shelf-" + suffix, appearance: appearance)
             try await render(NSHostingView(rootView: SettingsView(app: app)), size: CGSize(width: 460, height: 360), name: "settings-" + suffix, appearance: appearance)
             model.showCutout = true

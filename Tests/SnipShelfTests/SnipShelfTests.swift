@@ -136,6 +136,7 @@ final class SnipShelfTests: XCTestCase {
         _ = NSApplication.shared
         var completed: CGImage?
         let model = CanvasModel(image: try image(), isScreen: false, complete: { completed = $0 }, cancel: {})
+        model.subjectMaskEnabled = false
         let view = CanvasNSView(model: model)
         let window = NSWindow(contentRect: CGRect(x: 0, y: 0, width: 400, height: 400), styleMask: .borderless, backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false

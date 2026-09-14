@@ -9,13 +9,13 @@ final class LassoAssistTests: XCTestCase {
         for i in 0..<100 {
             let p = CGPoint(x: CGFloat(i) * 0.8, y: i % 2 == 0 ? 1 : -1)
             let a = filter.append(p, strength: 0.55, pixelsPerPoint: 1)
-            XCTAssertLessThanOrEqual(hypot(a.x - p.x, a.y - p.y), 1)
+            XCTAssertLessThanOrEqual(hypot(a.x - p.x, a.y - p.y), 1.8)
             let b = retina.append(CGPoint(x: p.x * 2, y: p.y * 2), strength: 0.55, pixelsPerPoint: 2)
             XCTAssertEqual(a.x, b.x / 2, accuracy: 0.001)
             XCTAssertEqual(a.y, b.y / 2, accuracy: 0.001)
             if i > 10 { rawEnergy += p.y * p.y; smoothEnergy += a.y * a.y }
         }
-        XCTAssertLessThan(smoothEnergy, rawEnergy * 0.4)
+        XCTAssertLessThan(smoothEnergy, rawEnergy * 0.08)
         XCTAssertEqual(filter.append(CGPoint(x: 150, y: 40), strength: 0.55, pixelsPerPoint: 1), CGPoint(x: 150, y: 40))
         XCTAssertEqual(filter.append(CGPoint(x: 151, y: 41), strength: 0, pixelsPerPoint: 1), CGPoint(x: 151, y: 41))
         filter.reset()
@@ -120,6 +120,7 @@ final class LassoAssistTests: XCTestCase {
         let map = ContourMap(contours: [border, border.map { CGPoint(x: $0.x + 5, y: $0.y) }])
         for bypass in [false, true] {
             let model = CanvasModel(image: context.makeImage()!, isScreen: true, complete: { _ in XCTFail("Review must not save") }, cancel: {})
+            model.subjectMaskEnabled = false
             model.edgeMap = map; model.smoothing = 0.55
             let view = CanvasNSView(model: model)
             let window = NSWindow(contentRect: CGRect(x: 0, y: 0, width: 200, height: 200), styleMask: .borderless, backing: .buffered, defer: false)
@@ -138,7 +139,7 @@ final class LassoAssistTests: XCTestCase {
                 let count = view.points.count
                 view.mouseDragged(with: event(.leftMouseDragged, point))
                 let actual = try XCTUnwrap(view.points.last)
-                XCTAssertLessThanOrEqual(hypot(actual.x - point.x, actual.y - point.y), bypass ? 1 : 2.1)
+                XCTAssertLessThanOrEqual(hypot(actual.x - point.x, actual.y - point.y), bypass ? 1.8 : 2.9)
                 XCTAssertLessThanOrEqual(view.points.count - count, 1, "Never insert contour vertices into a freehand stroke")
             }
             let beforeTab = view.points
@@ -161,6 +162,7 @@ final class LassoAssistTests: XCTestCase {
         for (bypass, late, expected) in [(false, false, 32), (true, false, 32), (false, true, 32)] {
             var output: CGImage?
             let model = CanvasModel(image: context.makeImage()!, isScreen: false, complete: { output = $0 }, cancel: {})
+            model.subjectMaskEnabled = false
             model.smoothing = 0
             if !late { model.edgeMap = map }
             let view = CanvasNSView(model: model)

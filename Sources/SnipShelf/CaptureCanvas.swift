@@ -17,76 +17,138 @@ final class CanvasModel {
     var smoothing: Double { didSet { preferences?.set(smoothing, forKey: "lassoSmoothing") } }
     var snapEnabled: Bool { didSet { preferences?.set(snapEnabled, forKey: "lassoSnap") } }
     var snapRadius: Double { didSet { preferences?.set(snapRadius, forKey: "lassoSnapRadius") } }
+    var subjectMaskEnabled: Bool {
+        didSet {
+            preferences?.set(subjectMaskEnabled, forKey: "visionCorrection")
+            if reviewing { applyReviewChoice(); startCorrection() }
+        }
+    }
     var edgeMap: ContourMap?
     let pixelEdges: PixelEdges?
     var reviewImage: CGImage?
     var showCutout = true
     private(set) var reviewPoints: [CGPoint] = []
     private(set) var reviewOrigin = CGPoint.zero
-    private(set) var previousOutline: [CGPoint]?
+    private typealias Outline = (points: [CGPoint], image: CGImage)
+    private var drawnReview: Outline?
+    private var correctedReview: Outline?
+    private var previousReview: (drawn: Outline, corrected: Outline?)?
+    var previousOutline: [CGPoint]? { previousReview?.drawn.points }
+    private(set) var correcting = false
     var restoreToken = 0
     var resumeToken = 0
     var reviewing: Bool { reviewImage != nil }
     var hasOutline: Bool { selecting || reviewing }
+    var canConfirm: Bool { reviewing && (!subjectMaskEnabled || !correcting) }
+    var correctionStatus: String {
+        if !subjectMaskEnabled { return "Using your drawn outline" }
+        if correcting { return "Finding the subject…" }
+        return correctedReview == nil ? "No subject mask available · kept your selection" : "Background removed within your selection"
+    }
     var edgeStatus = "Freehand ready · preparing edge help…"
-    private var analyzed = false
+    @ObservationIgnored private var edgeTask: Task<ContourMap, Error>?
+    @ObservationIgnored private(set) var correctionTask: Task<Void, Never>?
     @ObservationIgnored private let preferences: UserDefaults?
+    @ObservationIgnored private let subjectCutout: @Sendable (CGImage, [CGPoint]) throws -> CGImage?
     var complete: (CGImage) -> Void
     var cancel: () -> Void
     @ObservationIgnored var reviewReady: (() -> Void)?
-    init(image: CGImage, isScreen: Bool, preferences: UserDefaults? = nil, complete: @escaping (CGImage) -> Void, cancel: @escaping () -> Void) {
+    init(image: CGImage, isScreen: Bool, preferences: UserDefaults? = nil,
+         subjectCutout: @escaping @Sendable (CGImage, [CGPoint]) throws -> CGImage? = { try SubjectMask.cutout($0, points: $1) },
+         complete: @escaping (CGImage) -> Void, cancel: @escaping () -> Void) {
         session = CaptureSession(image: image)
         pixelEdges = PixelEdges(image)
         self.preferences = preferences
+        self.subjectCutout = subjectCutout
         smoothing = min(1, max(0, preferences?.object(forKey: "lassoSmoothing") as? Double ?? 0.55))
         snapEnabled = preferences?.object(forKey: "lassoSnap") as? Bool ?? true
         snapRadius = min(24, max(4, preferences?.object(forKey: "lassoSnapRadius") as? Double ?? 10))
+        subjectMaskEnabled = preferences?.object(forKey: "visionCorrection") as? Bool ?? true
         self.isScreen = isScreen; self.complete = complete; self.cancel = cancel
     }
-    func analyzeEdges() async {
-        guard !analyzed else { return }
-        analyzed = true
+    deinit { edgeTask?.cancel(); correctionTask?.cancel() }
+    private func edgeDetection() -> Task<ContourMap, Error> {
+        if let edgeTask { return edgeTask }
         let image = session.image
         let task = Task.detached(priority: .userInitiated) { try ContourMap.detect(in: image) }
-        await withTaskCancellationHandler {
-            do {
-                let map = try await task.value
-                guard !Task.isCancelled else { return }
-                edgeMap = map
-                edgeStatus = map.isEmpty ? "Freehand ready" : "Gentle edge help ready"
-            } catch {
-                guard !Task.isCancelled else { return }
-                edgeStatus = "Freehand ready"
-            }
-        } onCancel: { task.cancel() }
+        edgeTask = task
+        return task
+    }
+    func analyzeEdges() async {
+        guard edgeMap == nil else { return }
+        do {
+            let map = try await edgeDetection().value
+            guard !Task.isCancelled else { return }
+            edgeMap = map
+            edgeStatus = map.isEmpty ? "Freehand ready" : "Gentle edge help ready"
+        } catch {
+            guard !Task.isCancelled else { return }
+            edgeStatus = "Freehand ready"
+        }
     }
     func reset() {
-        if reviewing { previousOutline = reviewPoints }
+        if reviewing { checkpointReview() }
+        stopCorrection(); drawnReview = nil; correctedReview = nil
         reviewImage = nil; selecting = false; error = nil; resetToken += 1
     }
     func prepareReview(points: [CGPoint]) throws {
-        reviewImage = try ImageCore.crop(session.image, points: points)
-        reviewPoints = points
-        reviewOrigin = CGPoint(x: max(0, floor(points.map(\.x).min() ?? 0)),
-                               y: max(0, floor(points.map(\.y).min() ?? 0)))
+        let image = try ImageCore.crop(session.image, points: points)
+        stopCorrection()
+        drawnReview = (points, image); correctedReview = nil
         selecting = false
+        applyReviewChoice(); startCorrection()
         reviewReady?()
+    }
+    private func checkpointReview() {
+        if let drawnReview { previousReview = (drawnReview, correctedReview) }
+    }
+    private func applyReviewChoice() {
+        guard let drawnReview, !selecting else { return }
+        let outline = subjectMaskEnabled ? (correctedReview ?? drawnReview) : drawnReview
+        reviewPoints = outline.points
+        reviewOrigin = CGPoint(x: max(0, floor(outline.points.map(\.x).min() ?? 0)),
+                               y: max(0, floor(outline.points.map(\.y).min() ?? 0)))
+        reviewImage = outline.image
+    }
+    private func startCorrection() {
+        guard reviewing, subjectMaskEnabled, correctionTask == nil, correctedReview == nil, let drawnReview else { return }
+        correcting = true
+        let image = session.image, subjectCutout = subjectCutout
+        let worker = Task.detached(priority: .userInitiated) { () throws -> Outline? in
+            guard let cutout = try subjectCutout(image, drawnReview.points) else { return nil }
+            try Task.checkCancellation()
+            return (drawnReview.points, cutout)
+        }
+        correctionTask = Task { [weak self] in
+            let result = await withTaskCancellationHandler {
+                try? await worker.value
+            } onCancel: { worker.cancel() }
+            guard !Task.isCancelled, let self, self.reviewing else { return }
+            self.correcting = false
+            self.correctedReview = result
+            self.applyReviewChoice()
+        }
+    }
+    private func stopCorrection() {
+        correctionTask?.cancel(); correctionTask = nil; correcting = false
     }
     func continueSelection() {
         guard reviewing else { return }
         // ponytail: one outline checkpoint; use UndoManager if multi-step editing is needed.
-        previousOutline = reviewPoints
+        checkpointReview(); stopCorrection()
         reviewImage = nil; selecting = true; resumeToken += 1
     }
     func undoSelection() {
-        guard let points = previousOutline else { return }
-        do {
-            try prepareReview(points: points)
-            previousOutline = nil; error = nil; restoreToken += 1
-        } catch { self.error = error.localizedDescription }
+        guard let previousReview else { return }
+        stopCorrection()
+        drawnReview = previousReview.drawn; correctedReview = previousReview.corrected
+        self.previousReview = nil; selecting = false; error = nil; restoreToken += 1
+        applyReviewChoice(); startCorrection()
+        reviewReady?()
     }
     func confirm() {
-        guard let image = reviewImage else { return }
+        guard canConfirm, let image = reviewImage else { return }
+        stopCorrection(); drawnReview = nil; correctedReview = nil
         reviewImage = nil
         complete(image)
     }
@@ -94,23 +156,39 @@ final class CanvasModel {
 }
 
 struct CaptureReviewView: View {
-    let image: CGImage
+    @Bindable var model: CanvasModel
     let refine: () -> Void
-    let confirm: () -> Void
     var body: some View {
         VStack(spacing: 12) {
-            Image(nsImage: NSImage(cgImage: image, size: .zero))
-                .resizable().scaledToFit().padding(12)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .background(Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 10))
-                .accessibilityLabel("Selected cutout")
+            if let image = model.reviewImage {
+                Image(nsImage: NSImage(cgImage: image, size: .zero))
+                    .resizable().scaledToFit().padding(12)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .background(Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 10))
+                    .accessibilityLabel("Selected cutout")
+            }
+            SubjectMaskControl(model: model)
             HStack {
                 Button("Refine", action: refine).buttonStyle(.borderless)
                 Spacer()
-                Button("Keep Clip", action: confirm).buttonStyle(.borderedProminent)
-                    .keyboardShortcut(.defaultAction)
+                Button("Keep Clip") { model.confirm() }.buttonStyle(.borderedProminent)
+                    .keyboardShortcut(.defaultAction).disabled(!model.canConfirm)
             }
         }.padding(14).background(.regularMaterial)
+    }
+}
+
+struct SubjectMaskControl: View {
+    @Bindable var model: CanvasModel
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Toggle("Subject mask", isOn: $model.subjectMaskEnabled)
+                .toggleStyle(.checkbox).help("Remove background around the subject inside your selection. Turn off to restore your original cutout.")
+            HStack(spacing: 6) {
+                if model.subjectMaskEnabled && model.correcting { ProgressView().controlSize(.mini) }
+                Text(model.correctionStatus).font(.caption).foregroundStyle(.secondary)
+            }
+        }.frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 
@@ -172,16 +250,20 @@ struct CaptureView: View {
                     VStack {
                         Spacer()
                         if model.reviewing {
-                            HStack(spacing: 12) {
-                                Button("Redraw", systemImage: "arrow.counterclockwise") { model.reset() }
-                                    .help("Start again · ⌘Z restores this outline")
-                                Button("Refine", systemImage: "pencil.tip") { model.continueSelection() }
-                                    .help("Drag from the outline to retrace · ⌘Z restores the previous outline")
-                                Divider().frame(height: 22)
-                                Button("Keep Clip", systemImage: "checkmark") { model.confirm() }
-                                    .buttonStyle(.glassProminent).keyboardShortcut(.defaultAction)
-                                    .help("Save this cutout to the shelf (Return)")
-                            }.buttonStyle(.bordered).controlSize(.large)
+                            VStack(spacing: 10) {
+                                SubjectMaskControl(model: model)
+                                HStack(spacing: 12) {
+                                    Button("Redraw", systemImage: "arrow.counterclockwise") { model.reset() }
+                                        .help("Start again · ⌘Z restores this outline")
+                                    Button("Refine", systemImage: "pencil.tip") { model.continueSelection() }
+                                        .help("Drag from the outline to retrace · ⌘Z restores the previous outline")
+                                    Divider().frame(height: 22)
+                                    Button("Keep Clip", systemImage: "checkmark") { model.confirm() }
+                                        .buttonStyle(.glassProminent).keyboardShortcut(.defaultAction)
+                                        .disabled(!model.canConfirm)
+                                        .help("Save this cutout to the shelf (Return)")
+                                }.buttonStyle(.bordered).controlSize(.large)
+                            }.fixedSize(horizontal: true, vertical: false)
                                 .padding(12).glassEffect(.regular, in: RoundedRectangle(cornerRadius: 22))
                         } else if model.hasOutline {
                             Button("Redraw", systemImage: "arrow.counterclockwise") { model.reset() }
@@ -279,6 +361,7 @@ final class CanvasNSView: NSView {
         if !model.snapEnabled { previousHit = nil; snappedPoint = nil; alternatives = []; lastPointer = nil }
         if seenResume != model.resumeToken {
             seenResume = model.resumeToken; continuing = true; draggingLasso = false; lastPointer = nil
+            points = model.reviewPoints
             previousHit = nil; snappedPoint = nil; alternatives = []; stabilizer.reset()
             strokeEdges = model.edgeMap
             window?.makeFirstResponder(self)
@@ -291,6 +374,7 @@ final class CanvasNSView: NSView {
             window?.makeFirstResponder(self)
         }
         if displayedReview !== model.reviewImage {
+            if model.reviewing { points = model.reviewPoints }
             displayedReview = model.reviewImage
             reviewPicture = model.reviewImage.map { NSImage(cgImage: $0, size: .zero) }
         }
@@ -368,9 +452,16 @@ final class CanvasNSView: NSView {
             if model.reviewing { path.close() }
         }
         let shade = NSBezierPath(rect: bounds)
-        if points.count > 2 { let fill = path.copy() as! NSBezierPath; fill.close(); shade.append(fill) }
+        if !model.reviewing, points.count > 2 { let fill = path.copy() as! NSBezierPath; fill.close(); shade.append(fill) }
         shade.windingRule = .evenOdd
         NSColor.black.withAlphaComponent(model.reviewing ? 0.5 : (model.selecting ? 0.22 : 0.12)).setFill(); shade.fill()
+        if model.reviewing, let image = model.reviewImage {
+            // Highlight the actual mask while keeping the lasso available for refinement.
+            let rect = CGRect(origin: canvasPoint(model.reviewOrigin),
+                              size: CGSize(width: CGFloat(image.width) / pixelsPerPoint, height: CGFloat(image.height) / pixelsPerPoint))
+            reviewPicture?.draw(in: rect, from: .zero, operation: .sourceOver, fraction: 1,
+                                respectFlipped: true, hints: [.interpolation: NSImageInterpolation.high])
+        }
         if !points.isEmpty {
             path.lineJoinStyle = .round; path.lineCapStyle = .round
             NSColor.black.withAlphaComponent(0.55).setStroke(); path.lineWidth = 3; path.stroke()

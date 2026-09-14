@@ -9,8 +9,8 @@ struct LassoStabilizer {
     mutating func append(_ input: CGPoint, strength: CGFloat, pixelsPerPoint: CGFloat) -> CGPoint {
         guard let previous = point, strength > 0 else { point = input; return input }
         let distance = hypot(input.x - previous.x, input.y - previous.y)
-        // The maximum lag is radius / 4: at most one screen point, even at full strength.
-        let radius = (1 + 3 * min(1, strength)) * max(0.001, pixelsPerPoint)
+        // More room to suppress mouse jitter; lag stays below 1.8 pt at the default, 3 pt at full strength.
+        let radius = (1 + 11 * min(1, strength)) * max(0.001, pixelsPerPoint)
         let weight = min(1, max(0.18, distance / radius))
         let result = CGPoint(x: previous.x + (input.x - previous.x) * weight,
                              y: previous.y + (input.y - previous.y) * weight)

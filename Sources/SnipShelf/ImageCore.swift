@@ -72,7 +72,7 @@ enum ImageCore {
         return output
     }
 
-    static func crop(_ image: CGImage, points: [CGPoint]) throws -> CGImage {
+    static func crop(_ image: CGImage, points: [CGPoint], mask alphaMask: CGImage? = nil) throws -> CGImage {
         guard points.count >= 3, points.allSatisfy({ $0.x.isFinite && $0.y.isFinite }) else {
             throw ShelfError("Draw a closed area with at least three points.")
         }
@@ -90,7 +90,14 @@ enum ImageCore {
         context.setShouldAntialias(true)
         context.addPath(mask)
         context.clip(using: .evenOdd)
-        context.draw(image, in: CGRect(x: -rect.minX, y: rect.maxY - CGFloat(image.height), width: CGFloat(image.width), height: CGFloat(image.height)))
+        let sourceRect = CGRect(x: -rect.minX, y: rect.maxY - CGFloat(image.height), width: CGFloat(image.width), height: CGFloat(image.height))
+        if let alphaMask {
+            guard alphaMask.width == image.width, alphaMask.height == image.height else {
+                throw ShelfError("The subject mask does not match the source image.")
+            }
+            context.clip(to: sourceRect, mask: alphaMask)
+        }
+        context.draw(image, in: sourceRect)
         // A bow-tie can have zero signed area but visible even-odd lobes. Inspect coverage instead.
         guard let memory = context.data else { throw ShelfError("The selection could not be rendered.") }
         let bytes = memory.assumingMemoryBound(to: UInt8.self)

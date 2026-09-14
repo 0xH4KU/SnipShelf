@@ -10,7 +10,8 @@ Draw around part of an image, review the transparent cutout, and keep it nearby 
 
 ## Features
 
-- Freehand lasso with light stabilization and gentle edge assistance that yields to your gesture.
+- Freehand lasso with adaptive stabilization and gentle edge assistance that yields to your gesture.
+- Default-on native subject masks in review, with an instant switch back to the original cutout.
 - Polygon selection, zoom and pan, compact cutout confirmation, refinement undo, and Redraw / Refine / Keep Clip controls.
 - A floating shelf that tucks against the screen edge, with multi-selection, a resizable image preview, clipboard support, and deletion undo.
 - PNG cutouts with transparency, stored locally and available to other apps through copy and drag.

@@ -45,6 +45,7 @@ final class RevisionTests: XCTestCase {
         context.setFillColor(CGColor(gray: 1, alpha: 1)); context.fill(CGRect(x: 0, y: 0, width: 100, height: 100))
         var confirmations = 0
         let model = CanvasModel(image: context.makeImage()!, isScreen: true, complete: { _ in confirmations += 1 }, cancel: {})
+        model.subjectMaskEnabled = false
         let points = [CGPoint(x: 10, y: 10), CGPoint(x: 70, y: 10), CGPoint(x: 70, y: 70), CGPoint(x: 10, y: 70)]
         try model.prepareReview(points: points)
         XCTAssertEqual(confirmations, 0)

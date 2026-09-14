@@ -267,7 +267,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let selection = canvasWindow.contentView.flatMap { canvas(in: $0)?.reviewScreenRect } ?? canvasWindow.frame
         let visible = canvasWindow.screen?.visibleFrame ?? NSScreen.main?.visibleFrame ?? canvasWindow.frame
         let size = CGSize(width: min(340, visible.width),
-                          height: min(visible.height - 30, max(110, min(250, 288 * CGFloat(image.height) / CGFloat(image.width))) + 76))
+                          height: min(visible.height - 30, max(110, min(250, 288 * CGFloat(image.height) / CGFloat(image.width))) + 126))
         let panel = ShelfPanel(contentRect: CGRect(origin: .zero, size: size),
                                styleMask: [.titled, .closable, .utilityWindow], backing: .buffered, defer: false)
         panel.title = "Capture Preview"
@@ -276,9 +276,9 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
         panel.level = .floating
         panel.collectionBehavior = [.fullScreenAuxiliary, .moveToActiveSpace]
         panel.delegate = self
-        panel.contentView = NSHostingView(rootView: CaptureReviewView(image: image, refine: { [weak self] in
+        panel.contentView = NSHostingView(rootView: CaptureReviewView(model: model, refine: { [weak self] in
             self?.refineCapture()
-        }, confirm: { [weak model] in model?.confirm() }))
+        }))
         panel.onKey = { [weak model] event in
             guard event.modifierFlags.intersection([.command, .control, .option, .shift]).isEmpty else { return false }
             switch event.keyCode {

@@ -1,6 +1,6 @@
 # Validation
 
-Last checked: 2026-09-10. Host: Apple Silicon, macOS 27.0 (26A428). Builds use the locally installed Xcode and macOS SDK. Deployment target: macOS 26. Local app bundles are ad-hoc signed, not notarized.
+Last automated check: 2026-09-14. Host: Apple Silicon, macOS 27.0 (26A428). Builds use the locally installed Xcode and macOS SDK. Deployment target: macOS 26. Local app bundles are ad-hoc signed, not notarized. Manual evidence is dated below.
 
 ## Automated checks
 
@@ -12,11 +12,13 @@ DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test
 codesign --verify --strict dist/SnipShelf.app
 ```
 
-The suite contains **33 behavioral tests** plus one optional interface-rendering check covering:
+The suite contains **37 behavioral tests** plus one optional interface-rendering check covering:
 
 | Area | Coverage |
 | --- | --- |
-| Freehand assistance | Light stabilization, bounded edge nudges at multiple scales, crossing edges, ambiguous/dense regions, sharp turns, Option bypass, and late Vision results. Each drag adds at most one point; review output matches the displayed path. |
+| Freehand assistance | Stronger adaptive stabilization, bounded edge nudges at multiple scales, crossing edges, ambiguous/dense regions, sharp turns, Option bypass, and late Vision results. Each drag adds at most one point; review output matches the displayed path. |
+| Subject mask | Instance selection follows the lasso in top-left image coordinates and excludes background labels. Alpha application preserves white subject interiors, source colors, existing transparency, soft alpha, holes and concave selection bounds; mismatched mask dimensions are rejected. Blank-image fallback and existing opt-out preferences are covered. |
+| Review lifecycle | Default-on subject masking can be toggled back to exact original PNG pixels, including after refinement undo. The editable lasso and crop registration survive masking. Pending work cannot save an unseen result or resurrect a reset/confirmed selection. Lifecycle checks use a fixed mask independently of Vision's versioned recognition model. |
 | Polygon assistance | Local contour selection, release distance, alternate candidates, and pixel fallback on thin borders. |
 | Selection review | Continue from the middle of an existing segment, Redraw/Refine/Keep Clip transitions, one-step refinement undo restoring outline and PNG pixels, and exactly-once confirmation. |
 | Image processing | Coordinate mapping, orientation, concave and self-intersecting selections, invalid input, transparency, anti-aliasing, and PNG round-trips. |
@@ -26,7 +28,44 @@ The suite contains **33 behavioral tests** plus one optional interface-rendering
 | Compact capture review | Actual canvas events open a small floating preview and hide the editor; Refine preserves the outline, zoom and pan; undo restores the cutout; Return saves once; Escape and window-close cancel. Placement stays on screen for corner selections. Screen capture and recropping share this path. |
 | AppKit interaction | Canvas mouse event flows, actual-size scaling, shelf move/dock state, continuous inward pulls from both edges, preview navigation/closing, native preview Fit/100%, background-picker insets after repeated zoom resets and resizing, and clear thumbnail backgrounds. |
 
-Freehand tests bound filter lag to one screen point and edge correction to 1.1 screen points. The tested combined trace stays within 2.1 points of the pointer. These are synthetic behavior checks, not proof of subjective smoothness on arbitrary artwork or devices.
+At the default 55% steadiness, freehand tests bound filter lag to 1.8 screen points and edge correction to 1.1 screen points. The tested combined trace stays within 2.9 points of the pointer. On the alternating-jitter fixture, filtered vertical variation is below 8% of the input while deliberate fast motion follows immediately. These are synthetic behavior checks, not proof of subjective smoothness on arbitrary artwork or devices.
+
+On September 14, the faint ellipse was reproduced from the exact practice-board
+pixels with a reconstructed rough lasso. Full-image Vision detection missed it,
+including stronger contrast settings. A local pass with 4× contrast and an
+automatic intensity pivot recovered it, as did OpenCV 5.0.0 GrabCut using the same
+lasso. This is one synthetic comparison, not a photo-segmentation benchmark.
+That local contour retry was subsequently replaced by subject masking after the
+real-image comparison below. OpenCV was used in an isolated experiment and is
+not an app dependency.
+
+Six fixed selections (whole subject and head on each of three supplied images)
+were then compared using the actual app review pipeline, OpenCV GrabCut, and
+Apple's native `VNGenerateForegroundInstanceMaskRequest`. All processing stayed
+local. GrabCut used the same canonical source pixels, five iterations, a fixed
+random seed, probable foreground inside the lasso and definite background
+outside, with a 1536-pixel analysis cap and no corrective strokes. The native
+foreground experiment selected the instance overlapping the lasso most, then
+clipped its alpha to that lasso.
+
+| Supplied material | Previous contour correction | GrabCut experiment | Native foreground mask |
+| --- | --- | --- | --- |
+| Person on a pale background | Whole selection stayed manual; head correction lost the white bonnet and some hair. | Whole figure mostly retained; head selection lost the bonnet. | Retained the bonnet, hair and white clothing more completely. |
+| Gray line art on white | Whole correction cut away parts of the hair and clothing; head stayed manual. | Removed much of the interior white; head output was empty. | Retained the white face, body and clothing interiors. |
+| Colored figure over other characters | Previously collapsed to a leg patch; the new span check retains the original whole selection. Head correction still loses dark details. | Lost black clothing, accessories and some skin regions. | Retained the foreground figure more completely, but included parts of background characters. |
+
+These are visible-error comparisons without hand-labeled ground-truth masks,
+not accuracy scores or physical pointer tests. Subject masking is now the sole
+review-correction backend in SnipShelf; the contour matcher and its
+span/contrast heuristics were removed. Live drawing assistance still uses edges.
+The six supplied selections were rerun through the integrated review and save
+pipeline: each produced a mask, toggled back to the exact original crop, restored
+the same masked PNG on re-enabling, and saved the displayed bytes. Native canvas
+renders verified Original highlighting and Cutout transparency on the line art.
+Masks are applied to source alpha without recoloring or replacing the editable
+lasso. The comparison and integrated outputs are kept under ignored
+`.local/vision-comparison/real/` and `.local/subject-mask/`; supplied images are
+not committed as test fixtures.
 
 ## Release packaging
 
@@ -69,4 +108,4 @@ Earlier local QA sessions verified image import, selection review and confirmati
 - HEIC/WebP sample files, macOS 26 runtime, and Intel hardware. Current local runtime tests use macOS 27 on Apple Silicon.
 - Developer ID signing, notarization, and the downloaded-app Gatekeeper flow.
 
-Freehand remains manual selection with conservative assistance, not semantic object segmentation. Very large images can briefly block during encoding or disk writes. Undo history lasts for the app session; see the [usage guide](usage.md) for storage and recovery behavior.
+Vision subject masking can include background people when they are recognized as part of the same foreground instance, or miss detail on ambiguous artwork and simple geometric shapes. It selects one instance with the most overlap and stays inside the lasso. Refine changes that lasso, not individual mask pixels; the review toggle restores the original selection. Very large images can briefly block during encoding or disk writes. Undo history lasts for the app session; see the [usage guide](usage.md) for storage and recovery behavior.
