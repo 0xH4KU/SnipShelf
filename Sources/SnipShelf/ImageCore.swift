@@ -98,18 +98,22 @@ enum ImageCore {
             context.clip(to: sourceRect, mask: alphaMask)
         }
         context.draw(image, in: sourceRect)
+        guard hasVisibleCoverage(context), let result = context.makeImage() else {
+            throw ShelfError("The selection contains too few visible pixels.")
+        }
+        return result
+    }
+
+    static func hasVisibleCoverage(_ context: CGContext) -> Bool {
         // A bow-tie can have zero signed area but visible even-odd lobes. Inspect coverage instead.
-        guard let memory = context.data else { throw ShelfError("The selection could not be rendered.") }
+        guard let memory = context.data else { return false }
         let bytes = memory.assumingMemoryBound(to: UInt8.self)
         var alphaSum: Int = 0
         for y in 0..<context.height {
             for x in 0..<context.width { alphaSum += Int(bytes[y * context.bytesPerRow + x * 4 + 3]) }
-            if alphaSum >= 9 * 255 { break }
+            if alphaSum >= 9 * 255 { return true }
         }
-        guard alphaSum >= 9 * 255, let result = context.makeImage() else {
-            throw ShelfError("The selection contains too few visible pixels.")
-        }
-        return result
+        return false
     }
 
     static func png(_ image: CGImage) throws -> Data {

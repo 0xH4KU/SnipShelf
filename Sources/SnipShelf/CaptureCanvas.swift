@@ -5,6 +5,7 @@ import Observation
 @MainActor @Observable
 final class CanvasModel {
     enum Mode: String, CaseIterable { case lasso = "Lasso", polygon = "Polygon" }
+    enum MaskTool: String, CaseIterable { case view = "View", restore = "Restore", erase = "Erase" }
     let session: CaptureSession
     let isScreen: Bool
     var mode: Mode = .lasso
@@ -18,9 +19,18 @@ final class CanvasModel {
     var snapEnabled: Bool { didSet { preferences?.set(snapEnabled, forKey: "lassoSnap") } }
     var snapRadius: Double { didSet { preferences?.set(snapRadius, forKey: "lassoSnapRadius") } }
     var fluidDrawing: Bool { didSet { preferences?.set(fluidDrawing, forKey: "labFluidDrawing") } }
+    var maskTool: MaskTool = .view
+    var brushSize: Double = 24
+    private(set) var paintingMask = false
+    private(set) var canUndoMask = false
+    private(set) var canRedoMask = false
+    var canTouchUp: Bool { reviewing && subjectMaskEnabled && !correcting }
+    var editingMask: Bool { canTouchUp && maskTool != .view }
+    var canUndo: Bool { !paintingMask && ((canTouchUp && canUndoMask) || previousOutline != nil) }
     var subjectMaskEnabled: Bool {
         didSet {
             preferences?.set(subjectMaskEnabled, forKey: "visionCorrection")
+            if !subjectMaskEnabled { leaveMaskEditing() }
             if reviewing { applyReviewChoice(); startCorrection() }
         }
     }
@@ -33,22 +43,26 @@ final class CanvasModel {
     private typealias Outline = (points: [CGPoint], image: CGImage)
     private var drawnReview: Outline?
     private var correctedReview: Outline?
-    private var previousReview: (drawn: Outline, corrected: Outline?)?
+    private var editedReview: CGImage?
+    private var previousReview: (drawn: Outline, corrected: Outline?, edited: CGImage?)?
     var previousOutline: [CGPoint]? { previousReview?.drawn.points }
     private(set) var correcting = false
     var restoreToken = 0
     var resumeToken = 0
     var reviewing: Bool { reviewImage != nil }
     var hasOutline: Bool { selecting || reviewing }
-    var canConfirm: Bool { reviewing && (!subjectMaskEnabled || !correcting) }
+    var canConfirm: Bool { reviewing && !paintingMask && (!subjectMaskEnabled || !correcting) }
     var correctionStatus: String {
         if !subjectMaskEnabled { return "Using your drawn outline" }
         if correcting { return "Finding the subject…" }
+        if editedReview != nil { return "Subject mask with your touch-ups" }
         return correctedReview == nil ? "No subject mask available · kept your selection" : "Background removed within your selection"
     }
     var edgeStatus = "Freehand ready · preparing edge help…"
     @ObservationIgnored private var edgeTask: Task<ContourMap, Error>?
     @ObservationIgnored private(set) var correctionTask: Task<Void, Never>?
+    @ObservationIgnored private var maskBrush: MaskBrush?
+    @ObservationIgnored private let maskUndo = UndoManager()
     @ObservationIgnored private let preferences: UserDefaults?
     @ObservationIgnored private let subjectCutout: @Sendable (CGImage, [CGPoint]) throws -> CGImage?
     var complete: (CGImage) -> Void
@@ -62,6 +76,7 @@ final class CanvasModel {
         self.preferences = preferences
         self.fluidDrawing = fluidDrawing
         self.subjectCutout = subjectCutout
+        maskUndo.groupsByEvent = false
         smoothing = min(1, max(0, preferences?.object(forKey: "lassoSmoothing") as? Double ?? 0.55))
         snapEnabled = preferences?.object(forKey: "lassoSnap") as? Bool ?? true
         snapRadius = min(24, max(4, preferences?.object(forKey: "lassoSnapRadius") as? Double ?? 10))
@@ -89,12 +104,15 @@ final class CanvasModel {
         }
     }
     func reset() {
+        cancelMaskStroke()
         if reviewing { checkpointReview() }
+        clearMaskEdits()
         stopCorrection(); drawnReview = nil; correctedReview = nil
         reviewImage = nil; selecting = false; error = nil; resetToken += 1
     }
     func prepareReview(points: [CGPoint]) throws {
         let image = try ImageCore.crop(session.image, points: points)
+        clearMaskEdits()
         stopCorrection()
         drawnReview = (points, image); correctedReview = nil
         selecting = false
@@ -102,7 +120,7 @@ final class CanvasModel {
         reviewReady?()
     }
     private func checkpointReview() {
-        if let drawnReview { previousReview = (drawnReview, correctedReview) }
+        if let drawnReview { previousReview = (drawnReview, correctedReview, editedReview) }
     }
     private func applyReviewChoice() {
         guard let drawnReview, !selecting else { return }
@@ -110,7 +128,7 @@ final class CanvasModel {
         reviewPoints = outline.points
         reviewOrigin = CGPoint(x: max(0, floor(outline.points.map(\.x).min() ?? 0)),
                                y: max(0, floor(outline.points.map(\.y).min() ?? 0)))
-        reviewImage = outline.image
+        reviewImage = subjectMaskEnabled ? (editedReview ?? outline.image) : outline.image
     }
     private func startCorrection() {
         guard reviewing, subjectMaskEnabled, correctionTask == nil, correctedReview == nil, let drawnReview else { return }
@@ -134,22 +152,74 @@ final class CanvasModel {
     private func stopCorrection() {
         correctionTask?.cancel(); correctionTask = nil; correcting = false
     }
+    func beginMaskStroke(at point: CGPoint) {
+        guard editingMask, !paintingMask, let image = reviewImage, let original = drawnReview?.image else { return }
+        do {
+            maskBrush = try MaskBrush(image: image, original: original, origin: reviewOrigin, start: point,
+                diameter: CGFloat(brushSize), restoring: maskTool == .restore)
+            // Keep whole-stroke undo bounded for large images while retaining at least one undo.
+            maskUndo.levelsOfUndo = max(1, min(20, 64 * 1024 * 1024 / (image.width * image.height * 4)))
+            paintingMask = true; error = nil
+            paintMaskStroke(to: point)
+        } catch { self.error = error.localizedDescription }
+    }
+    func paintMaskStroke(to point: CGPoint) {
+        guard let maskBrush else { return }
+        do { reviewImage = try maskBrush.paint(to: point) }
+        catch { cancelMaskStroke(); self.error = error.localizedDescription }
+    }
+    func endMaskStroke() {
+        guard let maskBrush, let image = reviewImage else { return }
+        guard ImageCore.hasVisibleCoverage(maskBrush.context) else {
+            cancelMaskStroke(); error = "Keep some visible pixels. The last stroke was reverted."; return
+        }
+        self.maskBrush = nil; paintingMask = false
+        setMaskEdit(image)
+    }
+    func cancelMaskStroke() {
+        guard paintingMask else { return }
+        maskBrush = nil; paintingMask = false; applyReviewChoice()
+    }
+    func leaveMaskEditing() { cancelMaskStroke(); maskTool = .view }
+    private func setMaskEdit(_ image: CGImage?) {
+        let previous = editedReview
+        maskUndo.beginUndoGrouping()
+        maskUndo.registerUndo(withTarget: self) { $0.setMaskEdit(previous) }
+        maskUndo.setActionName("Mask stroke")
+        maskUndo.endUndoGrouping()
+        editedReview = image; applyReviewChoice(); updateMaskUndo()
+    }
+    private func updateMaskUndo() { canUndoMask = maskUndo.canUndo; canRedoMask = maskUndo.canRedo }
+    private func clearMaskEdits() {
+        maskBrush = nil; paintingMask = false; maskTool = .view; editedReview = nil
+        maskUndo.removeAllActions(); updateMaskUndo()
+    }
+    func redoMaskStroke() {
+        guard canTouchUp, !paintingMask else { return }
+        maskUndo.redo(); updateMaskUndo()
+    }
     func continueSelection() {
         guard reviewing else { return }
+        cancelMaskStroke()
         // ponytail: one outline checkpoint; use UndoManager if multi-step editing is needed.
         checkpointReview(); stopCorrection()
+        clearMaskEdits()
         reviewImage = nil; selecting = true; resumeToken += 1
     }
     func undoSelection() {
+        guard !paintingMask else { return }
+        if canTouchUp, maskUndo.canUndo { maskUndo.undo(); updateMaskUndo(); return }
         guard let previousReview else { return }
-        stopCorrection()
+        stopCorrection(); clearMaskEdits()
         drawnReview = previousReview.drawn; correctedReview = previousReview.corrected
+        editedReview = previousReview.edited
         self.previousReview = nil; selecting = false; error = nil; restoreToken += 1
         applyReviewChoice(); startCorrection()
         reviewReady?()
     }
     func confirm() {
         guard canConfirm, let image = reviewImage else { return }
+        clearMaskEdits()
         stopCorrection(); drawnReview = nil; correctedReview = nil
         reviewImage = nil
         complete(image)
@@ -318,6 +388,7 @@ struct SelectionCanvas: NSViewRepresentable {
     func makeNSView(context: Context) -> CanvasNSView { CanvasNSView(model: model) }
     func updateNSView(_ view: CanvasNSView, context: Context) {
         _ = model.scale; _ = model.offset; _ = model.actualSize; _ = model.mode; _ = model.resetToken; _ = model.edgeMap; _ = model.reviewImage; _ = model.resumeToken; _ = model.restoreToken; _ = model.showCutout; _ = model.snapEnabled
+        _ = model.maskTool; _ = model.brushSize
         view.refresh()
     }
 }
@@ -345,6 +416,9 @@ final class CanvasNSView: NSView {
     private var alternatives: [ContourMap.Hit] = []
     private var alternativeIndex = 0
     private var lastPointer: CGPoint?
+    private var spaceDown = false
+    private var panStart: CGPoint?
+    private var seenMaskTool: CanvasModel.MaskTool = .view
     override var isFlipped: Bool { true }
     override var acceptsFirstResponder: Bool { true }
     init(model: CanvasModel) {
@@ -359,14 +433,22 @@ final class CanvasNSView: NSView {
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
     override func viewDidMoveToWindow() { super.viewDidMoveToWindow(); window?.makeFirstResponder(self) }
-    override func resetCursorRects() { addCursorRect(bounds, cursor: .crosshair) }
+    override func resetCursorRects() {
+        addCursorRect(bounds, cursor: panStart != nil ? .closedHand : (spaceDown ? .openHand : .crosshair))
+    }
     override func updateTrackingAreas() {
         if let tracking { removeTrackingArea(tracking) }
-        tracking = NSTrackingArea(rect: .zero, options: [.activeInKeyWindow, .inVisibleRect, .mouseMoved], owner: self)
+        tracking = NSTrackingArea(rect: .zero, options: [.activeInKeyWindow, .inVisibleRect, .mouseMoved, .mouseEnteredAndExited], owner: self)
         addTrackingArea(tracking!)
         super.updateTrackingAreas()
     }
     func refresh() {
+        if !model.reviewing { panStart = nil; spaceDown = false }
+        if seenMaskTool != model.maskTool {
+            seenMaskTool = model.maskTool; hover = nil
+            window?.makeFirstResponder(self)
+        }
+        window?.invalidateCursorRects(for: self)
         if !model.snapEnabled { previousHit = nil; snappedPoint = nil; alternatives = []; lastPointer = nil }
         if seenResume != model.resumeToken {
             seenResume = model.resumeToken; continuing = true; draggingLasso = false; lastPointer = nil
@@ -416,6 +498,7 @@ final class CanvasNSView: NSView {
                        y: min(CGFloat(model.session.image.height), max(0, p.y)))
     }
     override func draw(_ dirtyRect: NSRect) {
+        defer { drawMaskCursor() }
         if model.reviewing, model.showCutout, let image = model.reviewImage {
             // Keep the cutout registered with the original while comparing and zooming.
             let p = canvasPoint(model.reviewOrigin)
@@ -507,6 +590,13 @@ final class CanvasNSView: NSView {
             ring.lineWidth = 2; ring.stroke()
         }
     }
+    private func drawMaskCursor() {
+        guard model.editingMask, !spaceDown, panStart == nil, let hover else { return }
+        let center = canvasPoint(hover), radius = CGFloat(model.brushSize) / (2 * pixelsPerPoint)
+        let ring = NSBezierPath(ovalIn: CGRect(x: center.x - radius, y: center.y - radius, width: radius * 2, height: radius * 2))
+        NSColor.black.withAlphaComponent(0.75).setStroke(); ring.lineWidth = 3; ring.stroke()
+        NSColor.white.setStroke(); ring.lineWidth = 1; ring.stroke()
+    }
     private var pixelsPerPoint: CGFloat { CGFloat(model.session.image.width) / max(1, imageRect.width) }
     var canCloseLasso: Bool {
         guard fluidStroke, draggingLasso, !optionDown, points.count > 2, let first = points.first, let hover,
@@ -571,7 +661,16 @@ final class CanvasNSView: NSView {
     override func mouseDown(with event: NSEvent) {
         refresh()
         window?.makeFirstResponder(self)
-        guard !model.reviewing else { return }
+        if model.reviewing {
+            if spaceDown, !model.paintingMask {
+                panStart = convert(event.locationInWindow, from: nil)
+                window?.invalidateCursorRects(for: self)
+            } else if imageRect.contains(convert(event.locationInWindow, from: nil)) {
+                hover = model.session.pixelPoint(convert(event.locationInWindow, from: nil), in: imageRect)
+                model.beginMaskStroke(at: hover!); refresh()
+            }
+            return
+        }
         guard imageRect.contains(convert(event.locationInWindow, from: nil)) else { return }
         model.error = nil
         optionDown = event.modifierFlags.contains(.option)
@@ -600,10 +699,26 @@ final class CanvasNSView: NSView {
         needsDisplay = true
     }
     override func mouseDragged(with event: NSEvent) {
+        if let panStart {
+            let location = convert(event.locationInWindow, from: nil)
+            model.offset.x += location.x - panStart.x; model.offset.y += location.y - panStart.y
+            self.panStart = location; hover = nil; needsDisplay = true; return
+        }
+        if model.paintingMask {
+            hover = model.session.pixelPoint(convert(event.locationInWindow, from: nil), in: imageRect)
+            model.paintMaskStroke(to: hover!); refresh(); return
+        }
         guard draggingLasso, model.selecting else { return }
         appendLasso(event)
     }
     override func mouseUp(with event: NSEvent) {
+        if panStart != nil {
+            panStart = nil; window?.invalidateCursorRects(for: self); return
+        }
+        if model.paintingMask {
+            hover = model.session.pixelPoint(convert(event.locationInWindow, from: nil), in: imageRect)
+            model.paintMaskStroke(to: hover!); model.endMaskStroke(); refresh(); return
+        }
         if draggingLasso, model.selecting {
             appendLasso(event)
             if fluidStroke, let first = points.first, let last = points.last {
@@ -615,7 +730,11 @@ final class CanvasNSView: NSView {
         }
     }
     override func mouseMoved(with event: NSEvent) {
-        guard !model.reviewing else { return }
+        if model.reviewing {
+            hover = imageRect.contains(convert(event.locationInWindow, from: nil))
+                ? model.session.pixelPoint(convert(event.locationInWindow, from: nil), in: imageRect) : nil
+            needsDisplay = true; return
+        }
         let oldSnap = snappedPoint
         hover = pixelPoint(event)
         if !model.selecting, model.snapEnabled, !event.modifierFlags.contains(.option) {
@@ -630,12 +749,22 @@ final class CanvasNSView: NSView {
             if let snappedPoint { setNeedsDisplay(ringRect(snappedPoint)) }
         }
     }
+    override func mouseExited(with event: NSEvent) { hover = nil; needsDisplay = true }
     override func keyDown(with event: NSEvent) {
         if event.modifierFlags.contains(.command), event.charactersIgnoringModifiers?.lowercased() == "z" {
-            model.undoSelection(); refresh(); return
+            if event.modifierFlags.contains(.shift) { model.redoMaskStroke() } else { model.undoSelection() }
+            refresh(); return
+        }
+        if model.reviewing, event.keyCode == 49, !model.paintingMask {
+            spaceDown = true; window?.invalidateCursorRects(for: self); needsDisplay = true; return
+        }
+        if model.editingMask, !model.paintingMask, let key = event.charactersIgnoringModifiers, key == "[" || key == "]" {
+            model.brushSize = min(128, max(1, model.brushSize + (key == "[" ? -2 : 2)))
+            needsDisplay = true; return
         }
         switch event.keyCode {
-        case 53: model.cancel()
+        case 53:
+            if model.editingMask { model.leaveMaskEditing(); refresh() } else { model.cancel() }
         case 36, 76:
             if model.reviewing { model.confirm() }
             else if model.mode == .polygon || continuing { finish() }
@@ -653,22 +782,27 @@ final class CanvasNSView: NSView {
         default: super.keyDown(with: event)
         }
     }
+    override func keyUp(with event: NSEvent) {
+        if event.keyCode == 49 { spaceDown = false; window?.invalidateCursorRects(for: self); needsDisplay = true }
+        else { super.keyUp(with: event) }
+    }
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
         if event.modifierFlags.contains(.command), event.charactersIgnoringModifiers?.lowercased() == "z" {
-            model.undoSelection(); refresh(); return true
+            if event.modifierFlags.contains(.shift) { model.redoMaskStroke() } else { model.undoSelection() }
+            refresh(); return true
         }
         return super.performKeyEquivalent(with: event)
     }
     override func scrollWheel(with event: NSEvent) {
-        guard !model.selecting else { return }
+        guard !model.selecting, !model.paintingMask else { return }
         model.offset.x -= event.scrollingDeltaX
         model.offset.y -= event.scrollingDeltaY
-        needsDisplay = true
+        hover = nil; needsDisplay = true
     }
     override func magnify(with event: NSEvent) {
-        guard !model.selecting else { return }
+        guard !model.selecting, !model.paintingMask else { return }
         model.scale = min(16, max(0.1, model.scale * (1 + event.magnification)))
-        needsDisplay = true
+        hover = nil; needsDisplay = true
     }
     private func finish() {
         do { try model.prepareReview(points: points); snappedPoint = nil; hover = nil; needsDisplay = true }

@@ -12,7 +12,7 @@ DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test
 codesign --verify --strict dist/SnipShelf.app
 ```
 
-The suite contains **40 behavioral tests** plus one optional interface-rendering check covering:
+The suite contains **43 behavioral tests** plus one optional interface-rendering check covering:
 
 | Area | Coverage |
 | --- | --- |
@@ -23,6 +23,7 @@ The suite contains **40 behavioral tests** plus one optional interface-rendering
 | Selection review | Continue from the middle of an existing segment, Redraw/Refine/Keep Clip transitions, one-step refinement undo restoring outline and PNG pixels, and exactly-once confirmation. |
 | Snip Lab | Classic/Fluid comparison with settings retained across images, repeated strokes on the real canvas, in-window review matching exported crop pixels, Refine/Undo, Next Try and Escape resetting the same source, and unreadable files preserving the current trial. |
 | Fluid drawing experiment | Timestamp-based smoothing at 60, 120, 240 and 1000 Hz, scale equivalence, immediate start, bounded lag, deliberate fast sweeps, and stale-velocity reset after pauses. Native canvas events cover the closing cue, 9-screen-point closing reach at different zoom levels, Option bypass, exact release endpoints, and refinement/export consistency. Enabled by default in Lab; the main app remains on Classic. |
+| Manual mask touch-up in Lab | Restore/Erase connect sparse pointer events and preserve source colors, partial alpha, transparency and the lasso boundary. Whole-stroke undo/redo, toggle preservation, cancelled strokes, pending-recognition guards, empty-result rollback, refinement undo and exact saved pixels are covered. Native canvas events verify brush registration in Original/Cutout at different zooms, Space-drag panning without painting, Escape leaving the brush, and keyboard undo/redo. |
 | Image processing | Coordinate mapping, orientation, concave and self-intersecting selections, invalid input, transparency, anti-aliasing, and PNG round-trips. |
 | Local storage | New-clip selection and failed-save selection preservation, persistence, deletion/undo, batch deletion with newer clips, missing assets, failed writes, corrupt index recovery, and 100 mixed-size clips. |
 | Drag import | Internal drags are rejected without writes; independent external PNG drops still import. |
@@ -111,6 +112,15 @@ the existing Snip Lab and SnipShelf processes. The Computer Use plugin's direct
 MCP entrypoint returned `Sender process is not authenticated`, so a live pointer
 check was not completed in this session.
 
+On September 14, the three supplied whole-subject selections were also tested
+with Lab's manual brushes after native subject masking. Erasing, restoring,
+whole-stroke undo/redo and toggle preservation passed on the photo, line art and
+illustration. A cached native Lab render checked the review inspector layout;
+outputs are under ignored `.local/mask-touchup/`. These checks exercise editing
+and pixel preservation, not segmentation accuracy or physical pointer feel.
+The rebuilt Lab launched successfully. A fresh direct Computer Use request for
+its app state timed out, so live pointer QA remains unverified.
+
 ## Previous manual checks
 
 Earlier local QA sessions verified image import, selection review and confirmation, recropping, multi-selection deletion/undo, shelf docking, preview, and clipboard exchange with Preview. The clipboard round-trip preserved PNG bytes. Those sessions used isolated QA storage and synthetic artwork; they are not a new manual test of every build.
@@ -126,4 +136,4 @@ Earlier local QA sessions verified image import, selection review and confirmati
 - HEIC/WebP sample files, macOS 26 runtime, and Intel hardware. Current local runtime tests use macOS 27 on Apple Silicon.
 - Developer ID signing, notarization, and the downloaded-app Gatekeeper flow.
 
-Vision subject masking can include background people when they are recognized as part of the same foreground instance, or miss detail on ambiguous artwork and simple geometric shapes. It selects one instance with the most overlap and stays inside the lasso. Refine changes that lasso, not individual mask pixels; the review toggle restores the original selection. Very large images can briefly block during encoding or disk writes. Undo history lasts for the app session; see the [usage guide](usage.md) for storage and recovery behavior.
+Vision subject masking can include background people when they are recognized as part of the same foreground instance, or miss detail on ambiguous artwork and simple geometric shapes. It selects one instance with the most overlap and stays inside the lasso. Refine changes that lasso; Lab additionally exposes manual Restore/Erase brushes in review. These brushes cannot restore pixels outside the lasso. Brush undo retains at most 20 source-resolution snapshots, reduced toward a 64 MiB budget for large cutouts (at least one undo remains available); very large selections may still need tiled rendering for responsive painting. The review toggle restores the original selection and retains touch-ups for re-enabling. Very large images can briefly block during encoding or disk writes. Undo history lasts for the app session; see the [usage guide](usage.md) for storage and recovery behavior.

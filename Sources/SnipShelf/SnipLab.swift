@@ -127,52 +127,74 @@ struct SnipLabView: View {
                         .accessibilityLabel("Zoom out")
                     Button { model.scale = min(16, model.scale * 1.25) } label: { Image(systemName: "plus.magnifyingglass") }
                         .accessibilityLabel("Zoom in")
-                }.disabled(model.hasOutline)
+                }.disabled(model.selecting || model.paintingMask)
             }.padding(14)
             Divider()
             HStack(spacing: 0) {
                 SelectionCanvas(model: model)
-                    .accessibilityHint("Draw to review. Return or Escape starts another try. Command-Z restores the previous outline.")
+                    .accessibilityHint("Draw to review. Restore and Erase touch up the mask. Hold Space and drag to pan. Command-Z undoes a stroke. Escape leaves touch-up; Return starts another try.")
                     .task { await model.analyzeEdges() }
                 Divider()
                 ScrollView {
                     VStack(alignment: .leading, spacing: 18) {
-                        VStack(alignment: .leading, spacing: 8) {
-                            Text("Drawing feel").font(.headline)
-                            Picker("Drawing feel", selection: $model.fluidDrawing) {
-                                Text("Classic").tag(false)
-                                Text("Fluid").tag(true)
-                            }.pickerStyle(.segmented).labelsHidden()
-                            Text(model.fluidDrawing
-                                ? "Steady slow strokes, responsive sweeps. The start ring lights up when you can release to close. Option bypasses closing help."
-                                : "The current app's drawing feel. Switch modes to compare on the same image.")
+                        if !model.reviewing {
+                            VStack(alignment: .leading, spacing: 8) {
+                                Text("Drawing feel").font(.headline)
+                                Picker("Drawing feel", selection: $model.fluidDrawing) {
+                                    Text("Classic").tag(false)
+                                    Text("Fluid").tag(true)
+                                }.pickerStyle(.segmented).labelsHidden()
+                                Text(model.fluidDrawing
+                                    ? "Steady slow strokes, responsive sweeps. The start ring lights up when you can release to close. Option bypasses closing help."
+                                    : "The current app's drawing feel. Switch modes to compare on the same image.")
+                                    .font(.caption).foregroundStyle(.secondary)
+                            }.disabled(model.selecting)
+                            SelectionAssistanceView(model: model).disabled(model.selecting)
+                            HStack {
+                                Button("Raw") { model.smoothing = 0; model.snapEnabled = false; model.subjectMaskEnabled = false; model.fluidDrawing = false }
+                                    .help("Turn off drawing assistance and the subject mask")
+                                Button("App Defaults") { model.smoothing = 0.55; model.snapEnabled = true; model.snapRadius = 10; model.subjectMaskEnabled = true; model.fluidDrawing = false }
+                                    .help("Restore the app's default assistance for the next stroke")
+                            }.disabled(model.selecting)
+                            Text("Drawing settings apply to your next stroke.")
                                 .font(.caption).foregroundStyle(.secondary)
-                        }.disabled(model.selecting)
-                        SelectionAssistanceView(model: model).disabled(model.selecting)
-                        HStack {
-                            Button("Raw") { model.smoothing = 0; model.snapEnabled = false; model.subjectMaskEnabled = false; model.fluidDrawing = false }
-                                .help("Turn off drawing assistance and the subject mask")
-                            Button("App Defaults") { model.smoothing = 0.55; model.snapEnabled = true; model.snapRadius = 10; model.subjectMaskEnabled = true; model.fluidDrawing = false }
-                                .help("Restore the app's default assistance for the next stroke")
-                        }.disabled(model.selecting)
-                        Text("Drawing settings apply to your next stroke.")
-                            .font(.caption).foregroundStyle(.secondary)
-                        Divider()
+                            Divider()
+                        }
                         if let image = model.reviewImage {
                             Text("Selection preview").font(.headline)
-                            SubjectMaskControl(model: model)
+                            SubjectMaskControl(model: model).disabled(model.paintingMask)
                             Image(nsImage: NSImage(cgImage: image, size: .zero))
-                                .resizable().scaledToFit().frame(maxWidth: .infinity).frame(height: 130)
+                                .resizable().scaledToFit().frame(maxWidth: .infinity).frame(height: 110)
                                 .background(.quaternary, in: RoundedRectangle(cornerRadius: 8))
                                 .accessibilityLabel("Trial cutout")
                             Picker("Canvas preview", selection: $model.showCutout) {
                                 Text("Original").tag(false)
                                 Text("Cutout").tag(true)
-                            }.pickerStyle(.segmented)
+                            }.pickerStyle(.segmented).disabled(model.paintingMask)
+                            VStack(alignment: .leading, spacing: 8) {
+                                Text("Manual touch-up").font(.headline)
+                                Picker("Touch-up tool", selection: $model.maskTool) {
+                                    ForEach(CanvasModel.MaskTool.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+                                }.pickerStyle(.segmented).labelsHidden()
+                                if model.maskTool != .view {
+                                    HStack {
+                                        Text("Brush size")
+                                        Spacer()
+                                        Text("\(Int(model.brushSize)) px").foregroundStyle(.secondary).monospacedDigit()
+                                    }
+                                    Slider(value: $model.brushSize, in: 1...128, step: 1).accessibilityLabel("Brush size")
+                                    Text("[ / ] resize · Space-drag pans · ⌘Z undoes")
+                                        .font(.caption).foregroundStyle(.secondary)
+                                }
+                                Text(model.subjectMaskEnabled
+                                    ? "Restore brings back original pixels inside your lasso. Erase removes unwanted areas."
+                                    : "Turn on Subject mask to touch up the result.")
+                                    .font(.caption).foregroundStyle(.secondary)
+                            }.disabled(!model.canTouchUp || model.paintingMask)
                             Text("\(image.width) × \(image.height) px · \(model.reviewPoints.count) points")
                                 .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
                             HStack {
-                                Button("Refine") { model.continueSelection() }
+                                Button("Refine Outline") { model.continueSelection() }.disabled(model.paintingMask)
                                 Spacer()
                                 Button("Next Try") { model.confirm() }
                                     .buttonStyle(.borderedProminent).keyboardShortcut(.defaultAction).disabled(!model.canConfirm)
@@ -183,14 +205,20 @@ struct SnipLabView: View {
                                 .foregroundStyle(.secondary)
                         }
                         HStack {
-                            Button("Redraw") { model.reset() }.keyboardShortcut(.cancelAction)
+                            Button(model.editingMask ? "Done" : "Redraw") {
+                                if model.editingMask { model.leaveMaskEditing() } else { model.reset() }
+                            }.keyboardShortcut(.cancelAction)
                             Button("Undo") { model.undoSelection() }
-                                .keyboardShortcut("z", modifiers: .command).disabled(model.previousOutline == nil)
+                                .keyboardShortcut("z", modifiers: .command).disabled(!model.canUndo)
+                            if model.canTouchUp {
+                                Button("Redo") { model.redoMaskStroke() }
+                                    .keyboardShortcut("z", modifiers: [.command, .shift]).disabled(!model.canRedoMask || model.paintingMask)
+                            }
                         }
                         if let error = model.error {
                             Text(error).foregroundStyle(.red).textSelection(.enabled)
                         }
-                        Text("Esc redraws · ⌘Z undoes\nTrial cutouts stay in this window.")
+                        Text("\(model.editingMask ? "Esc finishes touch-up" : "Esc redraws") · ⌘Z undoes\nTrial cutouts stay in this window.")
                             .font(.caption).foregroundStyle(.secondary)
                     }.padding(20).frame(maxWidth: .infinity, alignment: .leading)
                 }.frame(width: 300)

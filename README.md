@@ -51,6 +51,15 @@ position, and lights the start ring when releasing will close the lasso. Hold
 Option to bypass closing help. These drawing changes are being tested in Lab;
 the main app still uses Classic.
 
+In Lab review, **Manual touch-up** adds **Restore** and **Erase** brushes. Restore
+brings back original pixels inside the lasso; Erase removes unwanted areas.
+Zoom in for detail, adjust brush size in source pixels (or use `[` / `]`), and
+hold Space while dragging to pan. Command–Z undoes a whole stroke;
+Command–Shift–Z redoes it. **Done** or Escape leaves the brush without clearing
+the selection. Switching Subject mask off and back on preserves your touch-ups.
+**Refine Outline** still changes the lasso and computes a new mask; its undo
+restores the previous outline and touch-ups together.
+
 ```sh
 ./scripts/build_and_run.sh --lab        # build once; thereafter open the existing lab
 ./scripts/build_and_run.sh --lab-build  # rebuild the lab after changing Swift code
