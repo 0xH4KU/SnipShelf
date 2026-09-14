@@ -225,7 +225,9 @@ struct CaptureView: View {
                             }
                             Button { showAssist.toggle() } label: { Image(systemName: "wand.and.stars") }
                                 .help("Selection assistance").accessibilityLabel("Selection assistance")
-                                .disabled(model.selecting).popover(isPresented: $showAssist) { assistance }
+                                .disabled(model.selecting).popover(isPresented: $showAssist) {
+                                    SelectionAssistanceView(model: model).padding(20).frame(width: 270)
+                                }
                             Divider().frame(height: 18)
                             Button("Fit") { model.fit() }.help("Fit image").disabled(model.selecting)
                             Button("100%") { model.actualSize = true; model.scale = 1; model.offset = .zero }.disabled(model.selecting)
@@ -281,13 +283,17 @@ struct CaptureView: View {
         if model.previousOutline != nil && model.selecting { return "Retrace or redraw · ⌘Z restores the previous outline" }
         return model.mode == .lasso ? "Draw around an element · Release to review · ⌥ bypasses edge help" : "Click to add points · Return to review · Delete to undo"
     }
-    private var assistance: some View {
+}
+
+struct SelectionAssistanceView: View {
+    @Bindable var model: CanvasModel
+    var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             Text("Selection Assistance").font(.headline)
             Text(model.edgeStatus).font(.caption).foregroundStyle(.secondary)
             Picker("Tool", selection: $model.mode) {
                 ForEach(CanvasModel.Mode.allCases, id: \.self) { Text($0.rawValue).tag($0) }
-            }.pickerStyle(.segmented)
+            }.pickerStyle(.segmented).disabled(model.hasOutline)
             Toggle(model.mode == .lasso ? "Gentle edge help" : "Snap to edges", isOn: $model.snapEnabled)
             if model.mode == .polygon {
                 VStack(alignment: .leading, spacing: 6) {
@@ -301,7 +307,7 @@ struct CaptureView: View {
             }
             Text(model.mode == .lasso ? "Hold Option to bypass edge help. Steadiness stays on." : "Tab switches nearby edges. Option bypasses snapping.")
                 .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-        }.padding(20).frame(width: 270)
+        }
     }
 }
 
@@ -309,7 +315,7 @@ struct SelectionCanvas: NSViewRepresentable {
     var model: CanvasModel
     func makeNSView(context: Context) -> CanvasNSView { CanvasNSView(model: model) }
     func updateNSView(_ view: CanvasNSView, context: Context) {
-        _ = model.scale; _ = model.offset; _ = model.actualSize; _ = model.mode; _ = model.resetToken; _ = model.edgeMap; _ = model.reviewImage; _ = model.resumeToken; _ = model.restoreToken; _ = model.showCutout
+        _ = model.scale; _ = model.offset; _ = model.actualSize; _ = model.mode; _ = model.resetToken; _ = model.edgeMap; _ = model.reviewImage; _ = model.resumeToken; _ = model.restoreToken; _ = model.showCutout; _ = model.snapEnabled
         view.refresh()
     }
 }

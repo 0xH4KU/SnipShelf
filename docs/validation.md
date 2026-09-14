@@ -12,7 +12,7 @@ DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test
 codesign --verify --strict dist/SnipShelf.app
 ```
 
-The suite contains **37 behavioral tests** plus one optional interface-rendering check covering:
+The suite contains **38 behavioral tests** plus one optional interface-rendering check covering:
 
 | Area | Coverage |
 | --- | --- |
@@ -21,6 +21,7 @@ The suite contains **37 behavioral tests** plus one optional interface-rendering
 | Review lifecycle | Default-on subject masking can be toggled back to exact original PNG pixels, including after refinement undo. The editable lasso and crop registration survive masking. Pending work cannot save an unseen result or resurrect a reset/confirmed selection. Lifecycle checks use a fixed mask independently of Vision's versioned recognition model. |
 | Polygon assistance | Local contour selection, release distance, alternate candidates, and pixel fallback on thin borders. |
 | Selection review | Continue from the middle of an existing segment, Redraw/Refine/Keep Clip transitions, one-step refinement undo restoring outline and PNG pixels, and exactly-once confirmation. |
+| Snip Lab | Repeated strokes on the real canvas, in-window review matching exported crop pixels, Refine/Undo, Next Try and Escape resetting the same source, and unreadable files preserving the current trial. |
 | Image processing | Coordinate mapping, orientation, concave and self-intersecting selections, invalid input, transparency, anti-aliasing, and PNG round-trips. |
 | Local storage | New-clip selection and failed-save selection preservation, persistence, deletion/undo, batch deletion with newer clips, missing assets, failed writes, corrupt index recovery, and 100 mixed-size clips. |
 | Drag import | Internal drags are rejected without writes; independent external PNG drops still import. |
@@ -56,7 +57,7 @@ clipped its alpha to that lasso.
 
 These are visible-error comparisons without hand-labeled ground-truth masks,
 not accuracy scores or physical pointer tests. Subject masking is now the sole
-review-correction backend in SnipShelf; the contour matcher and its
+review-correction backend in SnipShelf and Snip Lab; the contour matcher and its
 span/contrast heuristics were removed. Live drawing assistance still uses edges.
 The six supplied selections were rerun through the integrated review and save
 pipeline: each produced a mask, toggled back to the exact original crop, restored
@@ -92,6 +93,12 @@ DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer SNIPSHELF_RENDER_QA="$P
 ```
 
 The September 10 render checks cover light and dark content layouts. AppKit cached-view PNGs do **not** capture compositor-backed Liquid Glass and vibrant controls faithfully, so they are not final appearance screenshots. The direct Computer Use plugin successfully inspected the running app and dragged the capture toolbar in Crop a Copy: a 100-point horizontal, 140-point vertical drag moved the toolbar by that amount. Its gesture now uses the fixed canvas coordinate space. The full screen-capture flow was blocked by macOS screen-recording permission; arbitrary canvas clicks also encountered the plugin's `windowNotFoundAtPosition` error. Compact-preview lifecycle checks use native AppKit tests, and trackpad feel still needs manual verification.
+
+On September 12, Snip Lab passed native canvas event tests and launched as a
+separate foreground app. Reopening with `--lab` preserved both app binaries and
+the existing Snip Lab and SnipShelf processes. The Computer Use plugin's direct
+MCP entrypoint returned `Sender process is not authenticated`, so a live pointer
+check was not completed in this session.
 
 ## Previous manual checks
 

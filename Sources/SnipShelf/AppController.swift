@@ -10,6 +10,13 @@ import Darwin
 struct SnipShelfMain {
     @MainActor static func main() {
         let application = NSApplication.shared
+        if Bundle.main.bundleIdentifier == "org.snipshelf.lab" {
+            let controller = SnipLabController()
+            application.delegate = controller
+            application.setActivationPolicy(.regular)
+            withExtendedLifetime(controller) { application.run() }
+            return
+        }
         let controller = AppController()
         application.delegate = controller
         application.setActivationPolicy(.accessory)

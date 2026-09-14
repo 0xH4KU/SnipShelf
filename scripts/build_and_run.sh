@@ -4,19 +4,25 @@ MODE="${1:-run}"
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 export DEVELOPER_DIR="${DEVELOPER_DIR:-/Applications/Xcode.app/Contents/Developer}"
 cd "$ROOT_DIR"
-case "$MODE" in run|--verify|--logs|--debug|--build|--release) ;; *) echo "Usage: $0 [run|--build|--release|--verify|--logs|--debug]" >&2; exit 2 ;; esac
+case "$MODE" in run|--verify|--logs|--debug|--build|--release|--lab|--lab-build) ;; *) echo "Usage: $0 [run|--build|--release|--verify|--logs|--debug|--lab|--lab-build]" >&2; exit 2 ;; esac
+APP_NAME=SnipShelf
+if [[ "$MODE" == --lab || "$MODE" == --lab-build ]]; then APP_NAME=SnipLab; fi
+APP_BUNDLE="$ROOT_DIR/dist/$APP_NAME.app"
+if [[ "$MODE" == --lab && -x "$APP_BUNDLE/Contents/MacOS/$APP_NAME" ]]; then
+  open "$APP_BUNDLE"
+  exit 0
+fi
 if [[ "$MODE" != --build && "$MODE" != --release ]]; then
-  pkill -TERM -x SnipShelf >/dev/null 2>&1 || true
+  pkill -TERM -x "$APP_NAME" >/dev/null 2>&1 || true
   for attempt in 1 2 3; do
-    if ! pgrep -x SnipShelf >/dev/null; then break; fi
+    if ! pgrep -x "$APP_NAME" >/dev/null; then break; fi
     sleep 1
   done
-  if pgrep -x SnipShelf >/dev/null; then
-    echo "SnipShelf is still open. Finish or cancel its unsaved-clip prompt before rebuilding." >&2
+  if pgrep -x "$APP_NAME" >/dev/null; then
+    echo "$APP_NAME is still open. Finish or cancel its unsaved-clip prompt before rebuilding." >&2
     exit 1
   fi
 fi
-APP_BUNDLE="$ROOT_DIR/dist/SnipShelf.app"
 BUILD_ARGS=(--configuration debug)
 if [[ "$MODE" == --release ]]; then
   BUILD_ARGS=(--configuration release --arch arm64
@@ -29,7 +35,7 @@ fi
 swift build "${BUILD_ARGS[@]}"
 BUILD_DIR="$(swift build "${BUILD_ARGS[@]}" --show-bin-path)"
 mkdir -p "$APP_BUNDLE/Contents/MacOS" "$APP_BUNDLE/Contents/Resources"
-cp "$BUILD_DIR/SnipShelf" "$APP_BUNDLE/Contents/MacOS/SnipShelf"
+cp "$BUILD_DIR/SnipShelf" "$APP_BUNDLE/Contents/MacOS/$APP_NAME"
 cp "$ROOT_DIR/Assets/AppIcon.icns" "$APP_BUNDLE/Contents/Resources/AppIcon.icns"
 cp "$ROOT_DIR/LICENSE" "$APP_BUNDLE/Contents/Resources/LICENSE"
 cat > "$APP_BUNDLE/Contents/Info.plist" <<'PLIST'
@@ -57,6 +63,17 @@ cat > "$APP_BUNDLE/Contents/Info.plist" <<'PLIST'
 </dict></array>
 </dict></plist>
 PLIST
+if [[ "$APP_NAME" == SnipLab ]]; then
+  for setting in \
+    'Set :CFBundleExecutable SnipLab' \
+    'Set :CFBundleIdentifier org.snipshelf.lab' \
+    'Set :CFBundleName SnipLab' \
+    'Set :CFBundleDisplayName Snip Lab' \
+    'Set :LSUIElement false' \
+    'Delete :CFBundleDocumentTypes'; do
+    /usr/libexec/PlistBuddy -c "$setting" "$APP_BUNDLE/Contents/Info.plist"
+  done
+fi
 if [[ "$MODE" == --release ]]; then
   xcrun strip -S -x "$APP_BUNDLE/Contents/MacOS/SnipShelf"
   xattr -cr "$APP_BUNDLE"
@@ -77,5 +94,5 @@ case "$MODE" in
   --debug) lldb -- "$APP_BUNDLE/Contents/MacOS/SnipShelf" ;;
   --logs) open -n "$APP_BUNDLE"; /usr/bin/log stream --info --style compact --predicate 'process == "SnipShelf"' ;;
   --verify) open -n "$APP_BUNDLE"; sleep 1; pgrep -x SnipShelf ;;
-  run) open -n "$APP_BUNDLE" ;;
+  run|--lab|--lab-build) open -n "$APP_BUNDLE" ;;
 esac

@@ -33,6 +33,27 @@ DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test
 
 The script also accepts `--verify`, `--logs`, and `--debug`. Set `DEVELOPER_DIR` to use another Xcode installation; the script does not change global `xcode-select`. Builds use local ad-hoc signing and are not notarized.
 
+### Snip Lab
+
+Use the separate **Snip Lab** app to tune selection feel without screen-recording
+permission. It uses the same native canvas, lasso, polygon, edge assistance and
+crop code as SnipShelf. Start with the built-in practice board or open your own
+image; change steadiness and edge help, compare Raw with App Defaults, then
+redraw or refine repeatedly. Review removes the subject's background within your
+selection using Apple Vision; turn off **Subject mask** to restore the original cutout. Return starts
+the next try; Escape redraws.
+Settings are saved separately and trial cutouts stay in memory.
+
+```sh
+./scripts/build_and_run.sh --lab        # build once; thereafter open the existing lab
+./scripts/build_and_run.sh --lab-build  # rebuild the lab after changing Swift code
+```
+
+You can also open `dist/SnipLab.app` directly, or use the **Snip Lab** development
+action. Changing the controls, loading images and repeating trials need no build.
+Swift code changes still require `--lab-build`; neither lab command rebuilds or
+relaunches the regular app.
+
 Release packaging uses an optimized Apple Silicon build, maps source paths,
 strips debug symbols, and bundles the MIT license. It checks the extracted ZIP's
 signature, architecture, version, contents, and common private build paths before

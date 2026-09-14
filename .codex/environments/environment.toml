@@ -6,3 +6,11 @@ script = ""
 name = "Run"
 icon = "run"
 command = "./scripts/build_and_run.sh"
+[[actions]]
+name = "Snip Lab"
+icon = "run"
+command = "./scripts/build_and_run.sh --lab"
+[[actions]]
+name = "Rebuild Snip Lab"
+icon = "run"
+command = "./scripts/build_and_run.sh --lab-build"
