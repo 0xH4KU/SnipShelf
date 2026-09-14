@@ -114,19 +114,21 @@ final class InteractionTests: XCTestCase {
         let original = try store.add(image, name: "Original")
         let app = AppController(store: store, preferences: preferences)
         let provider = NSItemProvider(item: try ImageCore.png(image) as NSData, typeIdentifier: UTType.png.identifier)
+        provider.suggestedName = "原始圖片.v2.png"
+        let unnamed = NSItemProvider(item: try ImageCore.png(image) as NSData, typeIdentifier: UTType.png.identifier)
         app.isDraggingClips = true
         XCTAssertFalse(app.acceptDrop([provider]))
         XCTAssertFalse(app.busy)
         XCTAssertEqual(store.clips, [original])
         app.isDraggingClips = false
-        XCTAssertTrue(app.acceptDrop([provider]))
+        XCTAssertTrue(app.acceptDrop([provider, unnamed]))
         for _ in 0..<200 {
             if !app.busy { break }
             try await Task.sleep(for: .milliseconds(10))
         }
         XCTAssertFalse(app.busy)
         XCTAssertNil(store.message)
-        XCTAssertEqual(store.clips.count, 2, "An independent external import must still work")
+        XCTAssertEqual(store.clips.map(\.name), ["Dropped image", "原始圖片.v2", "Original"])
     }
 
     @MainActor func testShelfCardKeepsTransparentPixelsClear() async throws {

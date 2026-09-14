@@ -357,7 +357,8 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
                         guard let type else { continue }
                         let data = try await provider.data(for: type)
                         let image = try await Task.detached { try ImageCore.load(data) }.value
-                        store.receive(image, name: "Dropped image")
+                        let name = provider.suggestedName.map { ($0 as NSString).deletingPathExtension } ?? "Dropped image"
+                        store.receive(image, name: name)
                     }
                 } catch { store.message = error.localizedDescription }
             }
