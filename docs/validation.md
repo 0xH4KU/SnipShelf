@@ -12,7 +12,7 @@ DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test
 codesign --verify --strict dist/SnipShelf.app
 ```
 
-The suite contains **56 behavioral tests** plus one optional interface-rendering check covering:
+The suite contains **58 behavioral tests** plus optional interface-rendering and real-image subject-mask checks covering:
 
 | Area | Coverage |
 | --- | --- |
@@ -102,6 +102,33 @@ This targeted scan does not establish complete anonymity. The downloaded-app
 Gatekeeper flow still needs a manual check on another Mac.
 
 ## Interface rendering
+
+The September 16 snip fix passed all 60 checks, including six supplied-image
+selections using `SNIPSHELF_MASK_QA_CASES`. Each subject produced identical PNG
+bytes when analyzed alone or placed at an offset on a 2560 × 1440 background.
+The earlier full-screen analysis left visible background around small subjects;
+Vision now analyzes the selection's rectangular bounds before applying its lasso.
+The checks also cover failed-mask retry, retaining pending capture windows across
+focus changes, bringing the existing review forward when Capture is invoked
+again, and keeping the source pixel under the pointer fixed during zoom.
+
+Direct Computer Use plugin calls reproduced the old hidden-preview dead end and
+verified the rebuilt app's polygon selection, Capture Preview, Touch Up erase,
+keyboard undo, Refine, Redraw, and cancellation. The original shelf retained its
+24 clips. The `@oai/sky` entrypoint was unavailable, but the direct plugin worked
+with the full app path. Actual screen capture encountered the macOS recording
+permission guard. Physical freehand feel and trackpad pinch remain manual checks.
+Logs, mask comparisons, and light/dark native renders are under ignored
+`.local/snip-debug/`.
+
+To repeat the optional subject-mask check with a local manifest of image paths
+and lasso points (the supplied images are not committed):
+
+```sh
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
+SNIPSHELF_MASK_QA_CASES="$PWD/.local/vision-comparison/real/cases.json" \
+swift test --filter SelectionCorrectionTests
+```
 
 The September 16 polish adds labeled Capture/Import actions, compact group
 navigation, a selection menu, native preview control groups, shared background

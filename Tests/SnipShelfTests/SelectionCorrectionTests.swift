@@ -1,9 +1,63 @@
 import XCTest
 import AppKit
 import CoreVideo
+import Synchronization
 @testable import SnipShelf
 
 final class SelectionCorrectionTests: XCTestCase {
+    func testSubjectMaskIgnoresTheSurroundingDesktopWhenRequested() throws {
+        guard let manifest = ProcessInfo.processInfo.environment["SNIPSHELF_MASK_QA_CASES"] else { return }
+        let cases = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: URL(fileURLWithPath: manifest))) as? [[String: Any]])
+        for item in cases {
+            let source = try ImageCore.load(URL(fileURLWithPath: XCTUnwrap(item["image"] as? String)))
+            let thumbnail = try ImageCore.thumbnail(source, maxSize: 400)
+            let points = try XCTUnwrap(item["points"] as? [[Double]]).map {
+                CGPoint(x: $0[0] * Double(thumbnail.width) / Double(source.width),
+                        y: $0[1] * Double(thumbnail.height) / Double(source.height))
+            }
+            let desktop = try ImageCore.context(width: 2560, height: 1440)
+            desktop.setFillColor(CGColor(gray: 0.2, alpha: 1)); desktop.fill(CGRect(x: 0, y: 0, width: 2560, height: 1440))
+            desktop.draw(thumbnail, in: CGRect(x: 720, y: 1440 - 370 - thumbnail.height, width: thumbnail.width, height: thumbnail.height))
+            let offsetPoints = points.map { CGPoint(x: $0.x + 720, y: $0.y + 370) }
+            let expected = try XCTUnwrap(SubjectMask.cutout(thumbnail, points: points))
+            let actual = try XCTUnwrap(SubjectMask.cutout(XCTUnwrap(desktop.makeImage()), points: offsetPoints))
+            XCTAssertEqual(actual.width, expected.width)
+            XCTAssertEqual(actual.height, expected.height)
+            XCTAssertEqual(try ImageCore.png(actual), try ImageCore.png(expected),
+                           "A small subject must receive the same mask at a screen offset: \(item["id"] ?? "")")
+        }
+    }
+
+    @MainActor func testFailedSubjectMaskCanRetryWithoutLosingTheSelection() async throws {
+        let attempts = Mutex(0)
+        let source = try SnipShelfTests().image(width: 100, height: 100)
+        let outline = SnipShelfTests().rect(10, 20, 70, 60)
+        let model = CanvasModel(image: source, isScreen: true, subjectCutout: { image, points in
+            let attempt = attempts.withLock { $0 += 1; return $0 }
+            if attempt == 1 { throw ShelfError("Recognition unavailable") }
+            return try ImageCore.crop(image, points: points)
+        }, complete: { _ in }, cancel: {})
+        try model.prepareReview(points: outline)
+        let original = try ImageCore.png(XCTUnwrap(model.reviewImage))
+        await model.correctionTask?.value
+        XCTAssertEqual(model.correctionError, "Recognition unavailable")
+        XCTAssertTrue(model.correctionStatus.contains("Recognition unavailable"))
+        XCTAssertTrue(model.canRetryCorrection)
+        XCTAssertTrue(model.canConfirm)
+        XCTAssertFalse(model.correcting)
+        XCTAssertEqual(try ImageCore.png(XCTUnwrap(model.reviewImage)), original)
+        model.retryCorrection()
+        XCTAssertTrue(model.correcting)
+        XCTAssertNil(model.correctionError)
+        model.retryCorrection()
+        await model.correctionTask?.value
+        XCTAssertEqual(attempts.withLock { $0 }, 2, "Retry must start exactly one new request")
+        XCTAssertFalse(model.canRetryCorrection)
+        XCTAssertEqual(model.reviewPoints, outline)
+        XCTAssertEqual(model.reviewOrigin, CGPoint(x: 10, y: 20))
+        XCTAssertEqual(try ImageCore.png(XCTUnwrap(model.reviewImage)), original)
+    }
+
     func testSubjectMaskPreservesSourcePixelsSoftAlphaHolesAndLassoBounds() throws {
         let helper = SnipShelfTests()
         let context = try ImageCore.context(width: 40, height: 30)

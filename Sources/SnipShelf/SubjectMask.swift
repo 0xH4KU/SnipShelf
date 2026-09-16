@@ -5,13 +5,20 @@ enum SubjectMask {
     static func cutout(_ image: CGImage, points: [CGPoint]) throws -> CGImage? {
         guard points.count >= 3, points.allSatisfy({ $0.x.isFinite && $0.y.isFinite }) else { return nil }
         try Task.checkCancellation()
-        let handler = VNImageRequestHandler(cgImage: image)
+        let path = CGMutablePath(); path.addLines(between: points); path.closeSubpath()
+        let bounds = path.boundingBoxOfPath.integral.intersection(CGRect(x: 0, y: 0, width: image.width, height: image.height))
+        guard !bounds.isNull, bounds.width >= 3, bounds.height >= 3,
+              let source = image.cropping(to: bounds) else { return nil }
+        let localPoints = points.map { CGPoint(x: $0.x - bounds.minX, y: $0.y - bounds.minY) }
+        // Give small screen selections the same analysis detail as standalone images.
+        // Keep the rectangular source intact for recognition; apply the lasso only to the result.
+        let handler = VNImageRequestHandler(cgImage: source)
         let request = VNGenerateForegroundInstanceMaskRequest()
         try handler.perform([request])
         try Task.checkCancellation()
         guard let observation = request.results?.first else { return nil }
-        let instances = try selectedInstances(in: observation.instanceMask, points: points,
-            imageSize: CGSize(width: image.width, height: image.height))
+        let instances = try selectedInstances(in: observation.instanceMask, points: localPoints,
+            imageSize: CGSize(width: source.width, height: source.height))
         guard !instances.isEmpty else { return nil }
         let buffer = try observation.generateScaledMaskForImage(forInstances: instances, from: handler)
         try Task.checkCancellation()
@@ -21,7 +28,7 @@ enum SubjectMask {
             throw ShelfError("The subject mask could not be rendered.")
         }
         // Apply only alpha to the original pixels, including any existing transparency.
-        return try ImageCore.crop(image, points: points, mask: alpha)
+        return try ImageCore.crop(source, points: localPoints, mask: alpha)
     }
 
     static func selectedInstances(in mask: CVPixelBuffer, points: [CGPoint], imageSize: CGSize) throws -> IndexSet {

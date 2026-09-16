@@ -3,6 +3,29 @@ import AppKit
 @testable import SnipShelf
 
 final class LassoAssistTests: XCTestCase {
+    @MainActor func testCanvasZoomKeepsThePixelUnderThePointer() throws {
+        let model = CanvasModel(image: try SnipShelfTests().image(width: 800, height: 600),
+            isScreen: false, complete: { _ in }, cancel: {})
+        let canvas = CanvasNSView(model: model)
+        canvas.frame = CGRect(x: 0, y: 0, width: 600, height: 500)
+        model.offset = CGPoint(x: 45, y: -20)
+        let pointer = CGPoint(x: 125, y: 160)
+        for actualSize in [false, true] {
+            model.actualSize = actualSize
+            let pixel = model.session.pixelPoint(pointer, in: canvas.imageRect)
+            for factor: CGFloat in [1.4, 0.8, 100, 0.001] {
+                canvas.zoom(by: factor, at: pointer)
+                let after = model.session.pixelPoint(pointer, in: canvas.imageRect)
+                XCTAssertEqual(after.x, pixel.x, accuracy: 0.0001)
+                XCTAssertEqual(after.y, pixel.y, accuracy: 0.0001)
+            }
+        }
+        let rect = canvas.imageRect
+        model.selecting = true
+        canvas.zoom(by: 2, at: pointer)
+        XCTAssertEqual(canvas.imageRect, rect, "A stroke must keep its coordinate system")
+    }
+
     func testFluidSteadinessStaysConsistentAcrossEventRatesAndScale() {
         var meanLags: [CGFloat] = []
         for hz in [60, 120, 240, 1000] {

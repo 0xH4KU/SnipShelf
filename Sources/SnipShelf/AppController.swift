@@ -287,10 +287,15 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     private func readyForNewImage() -> Bool {
+        if let window = captureReviewWindow ?? captureWindow {
+            NSApp.activate(ignoringOtherApps: true)
+            window.makeKeyAndOrderFront(nil)
+            return false
+        }
         guard store.pendingImage == nil else {
             store.message = "Save or export your unsaved clip before adding another image."; return false
         }
-        return !busy && captureWindow == nil
+        return !busy
     }
     func capture() {
         guard readyForNewImage() else { return }
@@ -353,6 +358,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let window = ShelfPanel(contentRect: frame, styleMask: style, backing: .buffered, defer: false)
         window.title = "Crop a Copy"
         window.isReleasedWhenClosed = false
+        window.hidesOnDeactivate = false
         window.level = screenCapture ? .screenSaver : .floating
         window.minSize = CGSize(width: 640, height: 420)
         window.contentView = NSHostingView(rootView: CaptureView(model: model))
@@ -382,6 +388,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
                                styleMask: [.titled, .closable, .utilityWindow], backing: .buffered, defer: false)
         panel.title = "Capture Preview"
         panel.isReleasedWhenClosed = false
+        panel.hidesOnDeactivate = false
         panel.isMovableByWindowBackground = true
         panel.level = .floating
         panel.collectionBehavior = [.fullScreenAuxiliary, .moveToActiveSpace]
@@ -406,8 +413,9 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
         captureReviewWindow?.delegate = nil
         captureReviewWindow?.close()
         captureReviewWindow = panel
-        canvasWindow.orderOut(nil)
+        NSApp.activate(ignoringOtherApps: true)
         panel.makeKeyAndOrderFront(nil)
+        canvasWindow.orderOut(nil)
     }
     func editCapture(refineOutline: Bool) {
         guard let model = captureModel, model.reviewing, !model.paintingMask,
@@ -416,6 +424,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
         captureReviewWindow?.close(); captureReviewWindow = nil
         if refineOutline { model.continueSelection() }
         else { model.showCutout = false; model.maskTool = .restore }
+        NSApp.activate(ignoringOtherApps: true)
         captureWindow?.makeKeyAndOrderFront(nil)
     }
     private func restoreFocus() {

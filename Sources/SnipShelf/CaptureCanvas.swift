@@ -49,6 +49,8 @@ final class CanvasModel {
     private var previousReview: (drawn: Outline, corrected: Outline?, edited: CGImage?)?
     var previousOutline: [CGPoint]? { previousReview?.drawn.points }
     private(set) var correcting = false
+    private(set) var correctionError: String?
+    var canRetryCorrection: Bool { reviewing && subjectMaskEnabled && !correcting && correctedReview == nil && editedReview == nil && !paintingMask }
     var restoreToken = 0
     var resumeToken = 0
     var reviewing: Bool { reviewImage != nil }
@@ -58,6 +60,7 @@ final class CanvasModel {
         if !subjectMaskEnabled { return "Using your drawn outline" }
         if correcting { return "Finding the subject…" }
         if editedReview != nil { return "Subject mask with your touch-ups" }
+        if let correctionError { return "Background removal failed: \(correctionError) · kept your selection" }
         return correctedReview == nil ? "No subject mask available · kept your selection" : "Background removed within your selection"
     }
     var edgeStatus = "Freehand ready · preparing edge help…"
@@ -138,6 +141,7 @@ final class CanvasModel {
     private func startCorrection() {
         guard reviewing, subjectMaskEnabled, correctionTask == nil, correctedReview == nil, let drawnReview else { return }
         correcting = true
+        correctionError = nil
         let image = session.image, subjectCutout = subjectCutout
         let worker = Task.detached(priority: .userInitiated) { () throws -> Outline? in
             guard let cutout = try subjectCutout(image, drawnReview.points) else { return nil }
@@ -146,16 +150,24 @@ final class CanvasModel {
         }
         correctionTask = Task { [weak self] in
             let result = await withTaskCancellationHandler {
-                try? await worker.value
+                await worker.result
             } onCancel: { worker.cancel() }
             guard !Task.isCancelled, let self, self.reviewing else { return }
             self.correcting = false
-            self.correctedReview = result
+            switch result {
+            case .success(let outline): self.correctedReview = outline
+            case .failure(let error): self.correctionError = error.localizedDescription
+            }
             self.applyReviewChoice()
         }
     }
+    func retryCorrection() {
+        guard canRetryCorrection else { return }
+        stopCorrection()
+        startCorrection()
+    }
     private func stopCorrection() {
-        correctionTask?.cancel(); correctionTask = nil; correcting = false
+        correctionTask?.cancel(); correctionTask = nil; correcting = false; correctionError = nil
     }
     func beginMaskStroke(at point: CGPoint) {
         guard editingMask, !paintingMask, let image = reviewImage, let original = drawnReview?.image else { return }
@@ -265,9 +277,15 @@ struct SubjectMaskControl: View {
     @Bindable var model: CanvasModel
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Toggle("Remove Background", isOn: $model.subjectMaskEnabled)
-                .toggleStyle(.switch).controlSize(.small)
-                .help("Remove background around the subject inside your selection. Turn off to restore your original cutout.")
+            HStack {
+                Toggle("Remove Background", isOn: $model.subjectMaskEnabled)
+                    .toggleStyle(.switch).controlSize(.small)
+                    .help("Remove background around the subject inside your selection. Turn off to restore your original cutout.")
+                if model.canRetryCorrection {
+                    Button("Retry") { model.retryCorrection() }.controlSize(.small)
+                        .help("Try removing the background again")
+                }
+            }
             HStack(spacing: 6) {
                 if model.subjectMaskEnabled && model.correcting { ProgressView().controlSize(.mini) }
                 Text(model.correctionStatus).font(.caption).foregroundStyle(.secondary).lineLimit(2)
@@ -435,7 +453,10 @@ struct CaptureView: View {
     private var hint: String {
         if let error = model.error { return error }
         if model.previousOutline != nil && model.selecting { return "Retrace or redraw · ⌘Z restores the previous outline" }
-        return model.mode == .lasso ? "Draw around an element · Release to review · ⌥ bypasses edge help" : "Click to add points · Return to review · Delete to undo"
+        return model.mode == .lasso
+            ? (model.subjectMaskEnabled ? "Draw around the subject · Release to remove background · ⌥ bypasses edge help"
+               : "Draw around an element · Release to review · ⌥ bypasses edge help")
+            : "Click to add points · Return to review · Delete to undo"
     }
 }
 
@@ -445,6 +466,9 @@ struct SelectionAssistanceView: View {
         VStack(alignment: .leading, spacing: 16) {
             Text("Selection Assistance").font(.headline)
             Text(model.edgeStatus).font(.caption).foregroundStyle(.secondary)
+            Toggle("Remove Background", isOn: $model.subjectMaskEnabled)
+                .help("Find the subject inside your selection after you finish drawing.")
+                .disabled(model.hasOutline)
             VStack(alignment: .leading, spacing: 8) {
                 Picker("Drawing feel", selection: $model.fluidDrawing) {
                     Text("Classic").tag(false)
@@ -923,8 +947,17 @@ final class CanvasNSView: NSView {
         hover = nil; needsDisplay = true
     }
     override func magnify(with event: NSEvent) {
+        zoom(by: 1 + event.magnification, at: convert(event.locationInWindow, from: nil))
+    }
+    func zoom(by factor: CGFloat, at anchor: CGPoint) {
         guard !model.selecting, !model.paintingMask else { return }
-        model.scale = min(16, max(0.1, model.scale * (1 + event.magnification)))
+        let before = imageRect
+        guard before.width > 0, before.height > 0, factor.isFinite, factor > 0 else { return }
+        let pixel = model.session.pixelPoint(anchor, in: before)
+        model.scale = min(16, max(0.1, model.scale * factor))
+        let moved = canvasPoint(pixel)
+        model.offset.x += anchor.x - moved.x
+        model.offset.y += anchor.y - moved.y
         hover = nil; needsDisplay = true
     }
     private func finish() {
