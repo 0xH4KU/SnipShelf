@@ -25,7 +25,7 @@ final class FolderTests: XCTestCase {
         let host = NSHostingView(rootView: ShelfCollection(app: app))
         let window = NSWindow(contentRect: CGRect(x: 0, y: 0, width: 300, height: 750), styleMask: .borderless, backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false; window.contentView = host; window.orderFront(nil)
-        defer { app.previewClip = nil; window.close() }
+        defer { app.previewClip = nil; for panel in app.referenceWindows.values { panel.close() }; window.close() }
         try await Task.sleep(for: .milliseconds(100))
         host.layoutSubtreeIfNeeded()
         func findCollection(_ view: NSView) -> ShelfCollection.CollectionView? {
@@ -81,10 +81,89 @@ final class FolderTests: XCTestCase {
         XCTAssertNil(coordinator.collectionView(collection, pasteboardWriterForItemAt: IndexPath(item: 0, section: 0)))
         let writer = try XCTUnwrap(coordinator.collectionView(collection, pasteboardWriterForItemAt: IndexPath(item: 6, section: 0)) as? NSPasteboardItem)
         XCTAssertEqual(writer.string(forType: .fileURL), store.url(for: loose).absoluteString)
-        let open = try XCTUnwrap(NSEvent.mouseEvent(with: .leftMouseDown, location: try point(5), modifierFlags: [], timestamp: 0,
-            windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1))
+        let start = try point(5)
+        @MainActor func mouse(_ type: NSEvent.EventType, _ point: CGPoint) throws -> NSEvent {
+            try XCTUnwrap(NSEvent.mouseEvent(with: type, location: point, modifierFlags: [], timestamp: 0,
+                windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1))
+        }
+        let open = try mouse(.leftMouseDown, start)
+        let release = window.convertPoint(fromScreen: CGPoint(x: NSScreen.main!.visibleFrame.midX, y: NSScreen.main!.visibleFrame.midY))
+        let dragBoard = NSPasteboard(name: .drag), boardChanges = dragBoard.changeCount
+        let sourceCard = try card(5)
+        let sourceFrame = window.convertToScreen(sourceCard.convert(sourceCard.bounds, to: nil))
+        let liftedFrame = sourceFrame.offsetBy(dx: release.x - start.x, dy: release.y - start.y)
+        // Inspect the actual tracking loop before allowing the mouse-up event through.
+        var inspectedLift = false
+        let inspection = Timer(timeInterval: 0.04, repeats: false) { _ in
+            MainActor.assumeIsolated {
+                let lift = NSApp.windows.compactMap { $0 as? ReferenceLiftWindow }.first { $0.isVisible }
+                XCTAssertEqual(lift?.frame.minX ?? .nan, liftedFrame.minX, accuracy: 1, "The lifted card must retain the original grab offset")
+                XCTAssertEqual(lift?.frame.minY ?? .nan, liftedFrame.minY, accuracy: 1)
+                XCTAssertEqual(lift?.frame.size, liftedFrame.size)
+                XCTAssertTrue(app.referenceWindows.isEmpty, "Full reference windows are created on release, not during tracking")
+                XCTAssertFalse(lift?.canBecomeKey ?? true, "The drag preview must not steal focus")
+                XCTAssertTrue(lift?.ignoresMouseEvents ?? false)
+                inspectedLift = true
+                NSApp.postEvent(try! mouse(.leftMouseUp, release), atStart: true)
+            }
+        }
+        RunLoop.main.add(inspection, forMode: .common)
+        NSApp.postEvent(try mouse(.leftMouseDragged, release), atStart: true)
+        collection.mouseDown(with: open)
+        XCTAssertTrue(inspectedLift)
+        let reference = try XCTUnwrap(app.referenceWindows[.group(groups[5].0.id)])
+        var placed = NSWindow.frameRect(forContentRect: CGRect(x: 0, y: 0, width: 340, height: 410), styleMask: reference.styleMask)
+        placed.origin = CGPoint(x: liftedFrame.minX, y: liftedFrame.maxY - placed.height)
+        placed = ShelfWindow.constrainedFrame(placed, to: NSScreen.main!.visibleFrame)
+        if !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+            XCTAssertEqual(reference.frame.width, liftedFrame.width, accuracy: 1, "The real window must begin at the card's size")
+            XCTAssertEqual(reference.frame.height, liftedFrame.height, accuracy: 1)
+            XCTAssertEqual(reference.frame.minX, liftedFrame.minX, accuracy: 1)
+            XCTAssertEqual(reference.frame.maxY, liftedFrame.maxY, accuracy: 1)
+        }
+        XCTAssertNil(store.currentFolderID, "Dragging a group must not also browse into it")
+        XCTAssertNil(store.selection)
+        XCTAssertFalse(app.isDraggingClips)
+        XCTAssertTrue(app.draggedClipIDs.isEmpty)
+        XCTAssertEqual(dragBoard.changeCount, boardChanges, "Pulling out a window must not initiate a file drop")
+        try await Task.sleep(for: .milliseconds(70))
+        if !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+            XCTAssertGreaterThan(reference.alphaValue, 0, "Opening must visibly progress while remaining interactive")
+            XCTAssertLessThan(reference.alphaValue, 1, "Opening should crossfade instead of popping into view")
+            XCTAssertGreaterThan(reference.frame.width, liftedFrame.width, "The card must visibly grow into the reference window")
+            XCTAssertLessThan(reference.frame.width, placed.width)
+            let lift = try XCTUnwrap(NSApp.windows.compactMap { $0 as? ReferenceLiftWindow }.first { $0.isVisible })
+            XCTAssertEqual(lift.frame.minX, reference.frame.minX, accuracy: 1)
+            XCTAssertEqual(lift.frame.minY, reference.frame.minY, accuracy: 1)
+            XCTAssertEqual(lift.frame.width, reference.frame.width, accuracy: 1, "The two surfaces must keep one continuous outline")
+            XCTAssertEqual(lift.frame.height, reference.frame.height, accuracy: 1)
+            let nextRelease = CGPoint(x: release.x + 30, y: release.y - 20)
+            NSApp.postEvent(try mouse(.leftMouseUp, nextRelease), atStart: true)
+            NSApp.postEvent(try mouse(.leftMouseDragged, nextRelease), atStart: true)
+            collection.mouseDown(with: open)
+            XCTAssertEqual(reference.referenceTransition?.destinationFrame?.size, placed.size, "Regrabbing mid-expansion must preserve the intended full window size")
+            placed = try XCTUnwrap(reference.referenceTransition?.destinationFrame)
+        }
+        try await Task.sleep(for: .milliseconds(380))
+        XCTAssertEqual(reference.frame.minX, placed.minX, accuracy: 1)
+        XCTAssertEqual(reference.frame.maxY, placed.maxY, accuracy: 1)
+        XCTAssertEqual(reference.frame.size, placed.size)
+        XCTAssertEqual(reference.alphaValue, 1, accuracy: 0.01)
+        XCTAssertEqual(sourceCard.alphaValue, 1, accuracy: 0.01)
+        XCTAssertFalse(NSApp.windows.contains { $0 is ReferenceLiftWindow && $0.isVisible }, "The transition must clean up its preview")
+        app.closeReference(.group(groups[5].0.id))
+        NSApp.postEvent(try mouse(.leftMouseUp, start), atStart: true)
+        NSApp.postEvent(try mouse(.leftMouseDragged, release), atStart: true)
+        collection.mouseDown(with: open)
+        XCTAssertTrue(app.referenceWindows.isEmpty, "Releasing back on the source returns the card without opening a reference")
+        XCTAssertNil(store.currentFolderID, "Returning a drag must not also trigger a click")
+        try await Task.sleep(for: .milliseconds(320))
+        XCTAssertEqual(sourceCard.alphaValue, 1, accuracy: 0.01)
+        NSApp.postEvent(try mouse(.leftMouseUp, start), atStart: true)
+        NSApp.postEvent(try mouse(.leftMouseDragged, CGPoint(x: start.x + 1, y: start.y + 1)), atStart: true)
         collection.mouseDown(with: open)
         XCTAssertEqual(store.currentFolderID, groups[5].0.id)
+        XCTAssertTrue(app.referenceWindows.isEmpty, "A click with minor pointer jitter must only browse the group")
         try await Task.sleep(for: .milliseconds(100))
         XCTAssertEqual(collection.numberOfItems(inSection: 0), 8)
         store.selection = store.visibleClips[0].id
@@ -348,6 +427,213 @@ final class FolderTests: XCTestCase {
         XCTAssertEqual(store.clips.first?.folderID, folder.id)
         XCTAssertEqual(store.visibleClips.count, 2)
         XCTAssertNil(store.message)
+    }
+}
+
+extension FolderTests {
+    @MainActor func testGroupAndImageReferenceWindowsStayIndependent() async throws {
+        _ = NSApplication.shared
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let suite = "org.snipshelf.tests." + UUID().uuidString
+        let preferences = UserDefaults(suiteName: suite)!
+        let store = ShelfStore(root: root)
+        let image = try SnipShelfTests().image(width: 1800, height: 1200)
+        let a = try store.add(image, name: "Material study"), b = try store.add(image, name: "Detail study")
+        let c = try store.add(image, name: "Color study"), loose = try store.add(image, name: "Loose reference")
+        let first = try store.createFolder(name: "Materials", including: [a.id, b.id])
+        let second = try store.createFolder(name: "Colors", including: [c.id])
+        let app = AppController(store: store, preferences: preferences)
+        defer {
+            for panel in app.referenceWindows.values { panel.close() }
+            app.previewClip = nil
+            try? FileManager.default.removeItem(at: root)
+            preferences.removePersistentDomain(forName: suite)
+        }
+        store.openFolder(second.id); store.selection = c.id
+        for target in [ReferenceTarget.group(first.id), .group(second.id), .clip(a.id), .clip(b.id)] { app.openReference(target) }
+        XCTAssertEqual(app.referenceWindows.count, 4)
+        let firstPanel = try XCTUnwrap(app.referenceWindows[.group(first.id)])
+        let secondPanel = try XCTUnwrap(app.referenceWindows[.group(second.id)])
+        let pin = try XCTUnwrap(app.referenceWindows[.clip(a.id)])
+        app.openReference(.clip(a.id))
+        XCTAssertTrue(app.referenceWindows[.clip(a.id)] === pin, "Opening an existing pin focuses it")
+        XCTAssertEqual(app.referenceWindows.count, 4)
+        XCTAssertEqual(store.currentFolderID, second.id)
+        XCTAssertEqual(store.selectedIDs, [c.id])
+        XCTAssertTrue(app.referenceWindows.values.allSatisfy { $0.level == .floating && !$0.hidesOnDeactivate && $0.styleMask.contains(.resizable) })
+        try await Task.sleep(for: .milliseconds(150))
+        func collection(in view: NSView) -> ShelfCollection.CollectionView? {
+            (view as? ShelfCollection.CollectionView) ?? view.subviews.lazy.compactMap { collection(in: $0) }.first
+        }
+        let firstGrid = try XCTUnwrap(collection(in: try XCTUnwrap(firstPanel.contentView)))
+        let secondGrid = try XCTUnwrap(collection(in: try XCTUnwrap(secondPanel.contentView)))
+        let coordinator = try XCTUnwrap(firstGrid.dataSource as? ShelfCollection.Coordinator)
+        XCTAssertEqual(coordinator.entries.compactMap(\.clip).map(\.id), [b.id, a.id])
+        func key(_ code: UInt16, _ text: String = "", _ modifiers: NSEvent.ModifierFlags = []) throws -> NSEvent {
+            try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: modifiers, timestamp: 0,
+                windowNumber: firstPanel.windowNumber, context: nil, characters: text, charactersIgnoringModifiers: text, isARepeat: false, keyCode: code))
+        }
+        XCTAssertTrue(firstGrid.handleKey(try key(0, "a", .command)))
+        XCTAssertEqual(coordinator.selectedIDs, [a.id, b.id])
+        XCTAssertEqual(store.selectedIDs, [c.id], "Reference selection must not select hidden clips in the shelf")
+        XCTAssertFalse(firstGrid.handleKey(try key(51)), "Delete in a reference must not delete the shelf selection")
+        app.closeReference(.clip(b.id))
+        let card = try XCTUnwrap(firstGrid.item(at: IndexPath(item: 0, section: 0))?.view as? ShelfCollection.CardView)
+        card.layoutSubtreeIfNeeded()
+        let pinPoint = card.pinButton.convert(CGPoint(x: card.pinButton.bounds.midX, y: card.pinButton.bounds.midY), to: firstGrid.superview)
+        let hit = firstGrid.hitTest(pinPoint)
+        XCTAssertTrue(hit === card.pinButton || hit?.isDescendant(of: card.pinButton) == true, "The collection must let the pin button receive pointer clicks")
+        card.pinButton.performClick(nil)
+        XCTAssertNotNil(app.referenceWindows[.clip(b.id)])
+        XCTAssertNil(app.previewClip)
+        XCTAssertEqual(store.selectedIDs, [c.id])
+        try await Task.sleep(for: .milliseconds(320))
+
+        let button = card.pinButton
+        let start = button.convert(CGPoint(x: button.bounds.midX, y: button.bounds.midY), to: nil)
+        func mouse(_ type: NSEvent.EventType, _ point: CGPoint) throws -> NSEvent {
+            try XCTUnwrap(NSEvent.mouseEvent(with: type, location: point, modifierFlags: [], timestamp: 0,
+                windowNumber: firstPanel.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1))
+        }
+        let existing = try XCTUnwrap(app.referenceWindows[.clip(b.id)])
+        let count = store.clips.count, selection = store.selectedIDs
+        let boardChanges = NSPasteboard(name: .drag).changeCount
+        let destination = CGPoint(x: NSScreen.main!.visibleFrame.midX, y: NSScreen.main!.visibleFrame.midY)
+        let release = firstPanel.convertPoint(fromScreen: destination)
+        let cardFrame = firstPanel.convertToScreen(card.convert(card.bounds, to: nil))
+        var dropFrame = cardFrame.offsetBy(dx: release.x - start.x, dy: release.y - start.y)
+        NSApp.postEvent(try mouse(.leftMouseUp, release), atStart: true)
+        NSApp.postEvent(try mouse(.leftMouseDragged, release), atStart: true)
+        button.mouseDown(with: try mouse(.leftMouseDown, start))
+        XCTAssertTrue(app.referenceWindows[.clip(b.id)] === existing, "Dragging an existing pin repositions it without making a second window")
+        try await Task.sleep(for: .milliseconds(60))
+        var interruptedFrame = existing.frame
+        let nextRelease = CGPoint(x: release.x + 45, y: release.y - 25)
+        let releaseInspection = Timer(timeInterval: 0.04, repeats: false) { _ in
+            MainActor.assumeIsolated {
+                interruptedFrame = existing.frame
+                NSApp.postEvent(try! mouse(.leftMouseUp, nextRelease), atStart: true)
+            }
+        }
+        RunLoop.main.add(releaseInspection, forMode: .common)
+        NSApp.postEvent(try mouse(.leftMouseDragged, nextRelease), atStart: true)
+        button.mouseDown(with: try mouse(.leftMouseDown, start))
+        if !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+            XCTAssertEqual(existing.frame.minX, interruptedFrame.minX, accuracy: 2, "Retargeting must begin at the current on-screen position")
+            XCTAssertEqual(existing.frame.minY, interruptedFrame.minY, accuracy: 2)
+        }
+        dropFrame = cardFrame.offsetBy(dx: nextRelease.x - start.x, dy: nextRelease.y - start.y)
+        try await Task.sleep(for: .milliseconds(320))
+        var placed = existing.frame
+        placed.origin = CGPoint(x: dropFrame.minX, y: dropFrame.maxY - placed.height)
+        placed = ShelfWindow.constrainedFrame(placed, to: NSScreen.main!.visibleFrame)
+        XCTAssertEqual(existing.frame.minX, placed.minX, accuracy: 1)
+        XCTAssertEqual(existing.frame.maxY, placed.maxY, accuracy: 1)
+        XCTAssertEqual(app.referenceWindows.count, 4)
+        XCTAssertEqual(store.clips.count, count)
+        XCTAssertEqual(store.selectedIDs, selection)
+        XCTAssertEqual(store.currentFolderID, second.id)
+        XCTAssertEqual(store.clips.first { $0.id == b.id }?.folderID, first.id)
+        XCTAssertFalse(app.isDraggingClips)
+        XCTAssertTrue(app.draggedClipIDs.isEmpty)
+        XCTAssertEqual(NSPasteboard(name: .drag).changeCount, boardChanges)
+        let previousFrame = existing.frame
+        let previousSavedFrame = preferences.string(forKey: ReferenceTarget.clip(b.id).frameKey)
+        NSApp.postEvent(try key(53), atStart: true)
+        NSApp.postEvent(try mouse(.leftMouseDragged, CGPoint(x: release.x + 60, y: release.y + 40)), atStart: true)
+        button.mouseDown(with: try mouse(.leftMouseDown, start))
+        XCTAssertEqual(existing.frame, previousFrame, "Escape restores an existing reference's position")
+        XCTAssertEqual(preferences.string(forKey: ReferenceTarget.clip(b.id).frameKey), previousSavedFrame)
+        try await Task.sleep(for: .milliseconds(320))
+        app.closeReference(.clip(b.id))
+        app.toggleReferences()
+        NSApp.postEvent(try key(53), atStart: true)
+        NSApp.postEvent(try mouse(.leftMouseDragged, release), atStart: true)
+        button.mouseDown(with: try mouse(.leftMouseDown, start))
+        XCTAssertNil(app.referenceWindows[.clip(b.id)], "Escape discards a new reference")
+        XCTAssertTrue(app.referencesHidden, "Cancelling preserves the visibility of existing references")
+        XCTAssertEqual(preferences.string(forKey: ReferenceTarget.clip(b.id).frameKey), previousSavedFrame)
+        try await Task.sleep(for: .milliseconds(320))
+        app.toggleReferences()
+        NSApp.postEvent(try mouse(.leftMouseUp, start), atStart: true)
+        button.mouseDown(with: try mouse(.leftMouseDown, start))
+        XCTAssertNotNil(app.referenceWindows[.clip(b.id)], "A normal pin-button click still opens one reference")
+        let opening = try XCTUnwrap(app.referenceWindows[.clip(b.id)])
+        let openingDestination = try XCTUnwrap(opening.referenceTransition?.destinationFrame)
+        app.closeReference(.clip(b.id))
+        XCTAssertEqual(preferences.string(forKey: ReferenceTarget.clip(b.id).frameKey), NSStringFromRect(openingDestination), "Closing mid-expansion must remember the full window size")
+        try await Task.sleep(for: .milliseconds(320))
+        XCTAssertNil(app.referenceWindows[.clip(b.id)], "Finishing an opening animation must not reopen a window closed during it")
+        XCTAssertFalse(NSApp.windows.contains { $0 is ReferenceLiftWindow && $0.isVisible })
+        app.openReference(.clip(b.id))
+        XCTAssertEqual(app.referenceWindows[.clip(b.id)]?.frame, openingDestination)
+        firstPanel.setFrameOrigin(firstPanel.frame.origin.applying(CGAffineTransform(translationX: 24, y: -32)))
+        let savedFrame = firstPanel.frame
+        app.toggleReferences()
+        XCTAssertTrue(app.referenceWindows.values.allSatisfy { !$0.isVisible })
+        app.toggleReferences()
+        XCTAssertEqual(firstPanel.frame, savedFrame)
+        app.closeReference(.group(first.id)); app.openReference(.group(first.id))
+        XCTAssertEqual(app.referenceWindows[.group(first.id)]?.frame, savedFrame)
+
+        store.openFolder(nil); store.selection = loose.id
+        let board = NSPasteboard(name: .init(suite))
+        defer { board.releaseGlobally() }
+        let writer = try XCTUnwrap(app.clipPasteboardItem(b))
+        XCTAssertEqual(writer.string(forType: .fileURL), store.url(for: b).absoluteString)
+        XCTAssertEqual(writer.data(forType: .png), try Data(contentsOf: store.url(for: b)))
+        XCTAssertTrue(board.writeObjects([writer]))
+        app.isDraggingClips = true; app.draggedClipIDs = [b.id]
+        let drop = GroupDraggingInfo(window: secondPanel, board: board, location: secondGrid.convert(CGPoint(x: 8, y: 8), to: nil))
+        XCTAssertEqual(secondGrid.draggingEntered(drop), .move)
+        XCTAssertTrue(secondGrid.performDragOperation(drop))
+        app.isDraggingClips = false; app.draggedClipIDs = []
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(store.clips.count, 4, "Reference drags move the original clip instead of importing a copy")
+        XCTAssertEqual(store.currentFolderID, nil)
+        XCTAssertEqual(store.selectedIDs, [loose.id])
+        XCTAssertEqual(secondGrid.numberOfItems(inSection: 0), 2, "Open group windows follow membership changes")
+        XCTAssertNotNil(app.referenceWindows[.clip(b.id)], "A pin follows its image when it changes groups")
+        try store.renameFolder(second.id, name: "Color directions")
+        try await Task.sleep(for: .milliseconds(80))
+        XCTAssertEqual(secondPanel.title, "Color directions")
+
+        if let destination = ProcessInfo.processInfo.environment["SNIPSHELF_RENDER_QA"] {
+            let directory = URL(fileURLWithPath: destination)
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            for (appearance, suffix): (NSAppearance.Name, String) in [(.aqua, "light"), (.darkAqua, "dark")] {
+                for (panel, name, size) in [(secondPanel, "reference-group", CGSize(width: 300, height: 300)), (pin, "reference-image", CGSize(width: 240, height: 240))] {
+                    panel.appearance = NSAppearance(named: appearance); panel.setContentSize(size)
+                    try await Task.sleep(for: .milliseconds(100))
+                    let view = try XCTUnwrap(panel.contentView)
+                    view.layoutSubtreeIfNeeded(); view.displayIfNeeded()
+                    XCTAssertEqual(view.bounds.width, size.width, accuracy: 1, "Full-resolution images must fit compact reference windows")
+                    let bitmap = try XCTUnwrap(view.bitmapImageRepForCachingDisplay(in: view.bounds))
+                    view.cacheDisplay(in: view.bounds, to: bitmap)
+                    try XCTUnwrap(bitmap.representation(using: .png, properties: [:])).write(to: directory.appendingPathComponent(name + "-" + suffix + ".png"))
+                }
+            }
+        }
+        store.delete([a.id])
+        try await Task.sleep(for: .milliseconds(80))
+        XCTAssertNil(app.referenceWindows[.clip(a.id)], "Deleting a clip closes its stale pin")
+        XCTAssertNotNil(app.referenceWindows[.group(first.id)], "An empty group remains open as a drop target")
+        let emptyPanel = try XCTUnwrap(app.referenceWindows[.group(first.id)])
+        let emptyGrid = try XCTUnwrap(collection(in: try XCTUnwrap(emptyPanel.contentView)))
+        XCTAssertEqual(emptyGrid.numberOfItems(inSection: 0), 0)
+        app.isDraggingClips = true; app.draggedClipIDs = [b.id]
+        let emptyDrop = GroupDraggingInfo(window: emptyPanel, board: board, location: emptyGrid.convert(CGPoint(x: 8, y: 8), to: nil))
+        XCTAssertTrue(emptyGrid.performDragOperation(emptyDrop))
+        app.isDraggingClips = false; app.draggedClipIDs = []
+        store.dissolveFolder(first.id)
+        try await Task.sleep(for: .milliseconds(80))
+        XCTAssertNil(app.referenceWindows[.group(first.id)])
+        XCTAssertNotNil(app.referenceWindows[.clip(b.id)])
+        XCTAssertTrue(FileManager.default.fileExists(atPath: store.url(for: b).path))
+        XCTAssertTrue(app.handleReferenceKey(try key(13, "w", .command), target: .clip(b.id)))
+        XCTAssertNil(app.referenceWindows[.clip(b.id)])
+        XCTAssertEqual(store.clips.count, 3, "Closing windows never deletes images")
+        XCTAssertTrue(NSScreen.main!.visibleFrame.contains(ShelfWindow.constrainedFrame(CGRect(x: -100000, y: -100000, width: 9999, height: 9999), to: NSScreen.main!.visibleFrame)))
     }
 }
 

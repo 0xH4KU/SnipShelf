@@ -4,6 +4,7 @@ import Observation
 
 final class ShelfPanel: NSPanel {
     var onKey: ((NSEvent) -> Bool)?
+    var referenceTransition: ReferenceLiftWindow?
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { false }
     override func keyDown(with event: NSEvent) {
@@ -25,6 +26,7 @@ final class ShelfWindow: NSObject, NSWindowDelegate {
     var panel: ShelfPanel!
     private var expandedSize = CGSize(width: 340, height: 440)
     private var timer: Timer?
+    var isAnimating: Bool { timer != nil }
     private var hoverTask: Task<Void, Never>?
     private var temporarilyExpanded = false
     private var dragStart = CGPoint.zero
@@ -182,15 +184,19 @@ final class ShelfWindow: NSObject, NSWindowDelegate {
     }
     func windowDidMove(_ notification: Notification) { if timer == nil && !moving { persist() } }
     @objc private func screensChanged() { recoverScreen(); persist() }
+    static func constrainedFrame(_ frame: CGRect, to visible: CGRect) -> CGRect {
+        let size = CGSize(width: min(frame.width, visible.width), height: min(frame.height, visible.height))
+        return CGRect(x: min(visible.maxX - size.width, max(visible.minX, frame.minX)),
+                      y: min(visible.maxY - size.height, max(visible.minY, frame.minY)), width: size.width, height: size.height)
+    }
     func recoverScreen() {
         guard panel != nil else { return }
         let f = panel.frame
         let targetScreen = NSScreen.screens.first { $0.visibleFrame.intersects(f) } ?? NSScreen.main ?? NSScreen.screens[0]
         let v = targetScreen.visibleFrame
-        let width = min(f.width, v.width), height = min(f.height, v.height)
-        var x = min(v.maxX - width, max(v.minX, f.minX))
-        if collapsed { x = edge == "left" ? v.minX : v.maxX - width }
-        panel.setFrame(CGRect(x: x, y: min(v.maxY - height, max(v.minY, f.minY)), width: width, height: height), display: true)
+        var frame = Self.constrainedFrame(f, to: v)
+        if collapsed { frame.origin.x = edge == "left" ? v.minX : v.maxX - frame.width }
+        panel.setFrame(frame, display: true)
     }
     func persist() {
         defaults.set(NSStringFromRect(panel.frame), forKey: "shelfFrame")

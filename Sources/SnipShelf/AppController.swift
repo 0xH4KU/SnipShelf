@@ -34,8 +34,15 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
     var draggedClipIDs: Set<UUID> = []
     var backdrop: Int { didSet { defaults.set(backdrop, forKey: "backdrop") } }
     var shortcutLabel: String
-    var previewClip: Clip? { didSet { updatePreview() } }
+    private var previewID: UUID?
+    var previewClip: Clip? {
+        get { store.clips.first { $0.id == previewID } }
+        set { previewID = newValue?.id; updatePreview() }
+    }
+    var referenceWindows: [ReferenceTarget: ShelfPanel] = [:]
+    var referencesHidden = false
     var status: String?
+    private(set) var copiedClipID: UUID?
     @ObservationIgnored private var statusItem: NSStatusItem!
     @ObservationIgnored private var hotKey: EventHotKeyRef?
     @ObservationIgnored private var hotKeyHandler: EventHandlerRef?
@@ -48,6 +55,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
     @ObservationIgnored private var previousApp: NSRunningApplication?
     @ObservationIgnored private var lastExternalApp: NSRunningApplication?
     @ObservationIgnored private var terminationSignal: DispatchSourceSignal?
+    @ObservationIgnored private var copyFeedbackTask: Task<Void, Never>?
 
     init(store: ShelfStore? = nil, preferences: UserDefaults? = nil) {
         let args = ProcessInfo.processInfo.arguments
@@ -61,6 +69,8 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
         backdrop = defaults.integer(forKey: "backdrop")
         shortcutLabel = defaults.string(forKey: "shortcutLabel") ?? "⌘⇧2"
         super.init()
+        observeReferenceChanges()
+        NotificationCenter.default.addObserver(self, selector: #selector(recoverReferenceWindows), name: NSApplication.didChangeScreenParametersNotification, object: nil)
     }
 
     static func menuBarIcon() -> NSImage {
@@ -115,6 +125,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let menu = NSMenu()
         menu.addItem(actionItem("Capture Element", action: #selector(captureAction)))
         menu.addItem(actionItem("Show Shelf", action: #selector(showAction)))
+        menu.addItem(actionItem("Show/Hide References", action: #selector(toggleReferences)))
         menu.addItem(actionItem("Import Images…", action: #selector(importAction)))
         menu.addItem(.separator())
         menu.addItem(actionItem("Settings…", action: #selector(settingsAction), key: ","))
@@ -181,28 +192,56 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     func editFolder(_ folder: ShelfFolder? = nil, including ids: Set<UUID> = []) {
+        guard !store.isReadOnly,
+              let name = promptName(title: folder == nil ? "New Group" : "Rename Group",
+                  detail: folder == nil && !ids.isEmpty ? "Move \(ids.count) selected clips into this group." : "Give these references a name.",
+                  name: folder?.name ?? "", placeholder: "Group name", button: folder == nil ? "Create" : "Rename") else { return }
+        do {
+            if let folder { try store.renameFolder(folder.id, name: name) }
+            else { openFolder(try store.createFolder(name: name, including: ids).id) }
+        } catch { store.message = error.localizedDescription }
+    }
+
+    func renameClip(_ clip: Clip) {
+        guard !store.isReadOnly, let current = store.clips.first(where: { $0.id == clip.id }),
+              let name = promptName(title: "Rename Image", detail: "Give this image a name that's easy to find.",
+                                    name: current.name, placeholder: "Image name", button: "Rename") else { return }
+        do { try store.renameClip(clip.id, name: name) }
+        catch { store.message = error.localizedDescription }
+    }
+
+    private func promptName(title: String, detail: String, name: String, placeholder: String, button: String) -> String? {
         let alert = NSAlert()
-        alert.messageText = folder == nil ? "New Group" : "Rename Group"
-        alert.informativeText = folder == nil && !ids.isEmpty ? "Move \(ids.count) selected clips into this group." : "Give these references a name."
-        let field = NSTextField(string: folder?.name ?? "")
-        field.placeholderString = "Group name"
-        field.setAccessibilityLabel("Group name")
+        alert.messageText = title
+        alert.informativeText = detail
+        let field = NSTextField(string: name)
+        field.placeholderString = placeholder
+        field.setAccessibilityLabel(placeholder)
         field.frame = CGRect(x: 0, y: 0, width: 260, height: 24)
         alert.accessoryView = field
-        alert.addButton(withTitle: folder == nil ? "Create" : "Rename")
+        alert.addButton(withTitle: button)
         alert.addButton(withTitle: "Cancel")
         alert.window.initialFirstResponder = field
         NSApp.activate(ignoringOtherApps: true)
-        guard alert.runModal() == .alertFirstButtonReturn else { return }
-        do {
-            if let folder { try store.renameFolder(folder.id, name: field.stringValue) }
-            else { openFolder(try store.createFolder(name: field.stringValue, including: ids).id) }
-        } catch { store.message = error.localizedDescription }
+        return alert.runModal() == .alertFirstButtonReturn ? field.stringValue : nil
+    }
+
+    func renameMenuItem(_ clip: Clip) -> NSMenuItem {
+        let item = actionItem("Rename Image…", action: #selector(renameClipAction(_:)))
+        item.representedObject = clip.id
+        item.isEnabled = !store.isReadOnly
+        return item
+    }
+
+    @objc private func renameClipAction(_ sender: NSMenuItem) {
+        if let id = sender.representedObject as? UUID, let clip = store.clips.first(where: { $0.id == id }) { renameClip(clip) }
     }
 
     func folderMenu(_ folder: ShelfFolder) -> NSMenu {
         let menu = NSMenu()
         menu.autoenablesItems = false
+        menu.addItem(referenceMenuItem(.group(folder.id)))
+        menu.addItem(.separator())
         for (title, action) in [("Rename Group…", #selector(renameFolderAction(_:))),
                                 ("Dissolve Group — Keep Clips", #selector(dissolveFolderAction(_:)))] {
             let item = actionItem(title, action: action)
@@ -222,8 +261,11 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
     func clipMenu(_ clip: Clip) -> NSMenu {
         if !store.selectedIDs.contains(clip.id) { store.selection = clip.id }
         let menu = NSMenu()
+        menu.autoenablesItems = false
         if store.selectedIDs.count == 1 {
         menu.addItem(actionItem("Preview", action: #selector(selectedPreview)))
+        menu.addItem(referenceMenuItem(.clip(clip.id)))
+        menu.addItem(renameMenuItem(clip))
         menu.addItem(actionItem("Copy Image", action: #selector(selectedCopy)))
         menu.addItem(actionItem("Export PNG…", action: #selector(selectedExport)))
         menu.addItem(actionItem("Crop a Copy…", action: #selector(selectedCrop)))
@@ -461,7 +503,14 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
             if let tiff = NSBitmapImageRep(cgImage: image).tiffRepresentation { item.setData(tiff, forType: .tiff) }
             NSPasteboard.general.clearContents()
             guard NSPasteboard.general.writeObjects([item]) else { throw ShelfError("The image could not be copied.") }
-            flash("Copied image")
+            copyFeedbackTask?.cancel()
+            copiedClipID = clip.id
+            status = "Copied image"
+            copyFeedbackTask = Task { [weak self] in
+                try? await Task.sleep(for: .seconds(2))
+                guard !Task.isCancelled else { return }
+                self?.copiedClipID = nil; self?.status = nil
+            }
         } catch { store.message = error.localizedDescription }
     }
     func export(_ clip: Clip) {
@@ -488,20 +537,17 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
         alert.addButton(withTitle: "Cancel"); alert.addButton(withTitle: "Clear Shelf")
         if alert.runModal() == .alertSecondButtonReturn { store.delete(Set(store.clips.map(\.id))) }
     }
-    func flash(_ value: String) {
-        status = value
-        Task { [weak self] in try? await Task.sleep(for: .seconds(2)); if self?.status == value { self?.status = nil } }
-    }
     func handleKey(_ event: NSEvent) -> Bool {
         let command = event.modifierFlags.contains(.command)
         if command {
             switch event.charactersIgnoringModifiers?.lowercased() {
             case "v": paste()
             case "c": if let clip = store.selectedClip { copy(clip) }
-            case "z": store.undo()
+            case "z" where !event.modifierFlags.contains(.shift): store.undo()
             case "a": store.selectedIDs = Set(store.visibleClips.map(\.id))
             case "o": chooseImages()
             case "n" where event.modifierFlags.contains(.shift): editFolder(including: store.selectedIDs)
+            case "p" where event.modifierFlags.contains(.shift): pinSelection()
             case "[": openFolder(nil)
             default: return false
             }
@@ -512,8 +558,9 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
             if let id = store.selectedFolderID { openFolder(id) }
             else { previewClip = store.selectedClip }
         case 36:
-            guard let id = store.selectedFolderID else { return false }
-            openFolder(id)
+            if let id = store.selectedFolderID { openFolder(id) }
+            else if let clip = store.selectedClip { renameClip(clip) }
+            else { return false }
         case 51, 117: store.delete(store.selectedIDs)
         case 53:
             if previewClip != nil { previewClip = nil }
@@ -541,6 +588,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
                                     styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
             window.isReleasedWhenClosed = false
             window.minSize = CGSize(width: 560, height: 420)
+            window.titlebarAppearsTransparent = true
             window.level = .floating
             window.delegate = self
             window.contentView = NSHostingView(rootView: PreviewView(app: self))
@@ -551,6 +599,10 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
         previewWindow?.title = clip.name
         NSApp.activate(ignoringOtherApps: true)
         previewWindow?.makeKeyAndOrderFront(nil)
+    }
+    func refreshPreviewTitle() {
+        guard let clip = previewClip else { previewWindow?.orderOut(nil); return }
+        previewWindow?.title = clip.name
     }
     var previewClips: [Clip] {
         guard let clip = store.clips.first(where: { $0.id == previewClip?.id }) else { return [] }
@@ -566,6 +618,9 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
         if let clip = adjacentPreview(delta) { previewClip = clip }
     }
     func handlePreviewKey(_ event: NSEvent) -> Bool {
+        if event.modifierFlags.contains(.command), !event.modifierFlags.contains(.shift), event.charactersIgnoringModifiers?.lowercased() == "z" {
+            store.undo(); return true
+        }
         if event.modifierFlags.intersection([.command, .control, .option]).isEmpty {
             switch event.keyCode {
             case 49, 53: previewClip = nil
@@ -579,12 +634,24 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
             if let clip = previewClip { copy(clip) }
             return true
         }
+        if event.modifierFlags.contains([.command, .shift]), event.charactersIgnoringModifiers?.lowercased() == "p" {
+            if let clip = previewClip { openReference(.clip(clip.id)) }
+            return true
+        }
         return false
     }
     func windowWillClose(_ notification: Notification) {
         if notification.object as? NSWindow === previewWindow { previewClip = nil }
         if notification.object as? NSWindow === captureReviewWindow { dismissCanvas() }
+        if let target = referenceWindows.first(where: { $0.value === notification.object as? NSWindow })?.key {
+            persistReferenceFrame(notification)
+            referenceWindows.removeValue(forKey: target)
+            if referenceWindows.isEmpty { referencesHidden = false }
+        }
     }
+
+    func windowDidMove(_ notification: Notification) { persistReferenceFrame(notification) }
+    func windowDidResize(_ notification: Notification) { persistReferenceFrame(notification) }
 
     private func installHotKeyHandler() {
         var type = EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))

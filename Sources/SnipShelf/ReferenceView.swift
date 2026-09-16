@@ -1,0 +1,148 @@
+import AppKit
+import SwiftUI
+
+struct ReferenceView: View {
+    let app: AppController
+    let target: ReferenceTarget
+
+    var body: some View {
+        Group {
+            switch target {
+            case .group(let id):
+                VStack(spacing: 0) {
+                    if app.store.clips.contains(where: { $0.folderID == id }) {
+                        ShelfCollection(app: app, referenceFolderID: id)
+                    } else {
+                        ContentUnavailableView("This group is empty", systemImage: "square.dashed", description: Text("Drop images here to collect references."))
+                        // Keep the native drop target mounted for an empty group, too.
+                            .overlay { ShelfCollection(app: app, referenceFolderID: id) }
+                    }
+                    HStack {
+                        Text("\(app.store.clips.filter { $0.folderID == id }.count) clips")
+                        Spacer()
+                        Label("Double-click to pin", systemImage: "pin")
+                    }.font(.caption).foregroundStyle(.secondary).padding(12).background(.bar)
+                }
+            case .clip(let id):
+                if let clip = app.store.clips.first(where: { $0.id == id }) {
+                    PinnedClipView(app: app, clip: clip)
+                }
+            }
+        }
+        .background(.regularMaterial)
+    }
+}
+
+private struct PinnedClipView: View {
+    let app: AppController
+    let clip: Clip
+    @AppStorage private var backdrop: Int
+    @State private var image: NSImage?
+    @State private var failure: String?
+
+    init(app: AppController, clip: Clip) {
+        self.app = app
+        self.clip = clip
+        _backdrop = AppStorage(wrappedValue: app.backdrop, ReferenceTarget.clip(clip.id).backgroundKey, store: app.defaults)
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            ZStack {
+                ImageBackdrop(style: backdrop)
+                if let failure { ContentUnavailableView("Unable to Open Image", systemImage: "photo.badge.exclamationmark", description: Text(failure)) }
+                else if let preview = image ?? app.store.thumbnail(for: clip) {
+                    ReferenceImage(app: app, clip: clip, image: preview)
+                        .padding(12)
+                        .contextMenu {
+                            Button("Preview", systemImage: "eye") { app.previewClip = clip }
+                            Button("Rename Image…", systemImage: "pencil") { app.renameClip(clip) }
+                                .disabled(app.store.isReadOnly)
+                            Button("Copy Image", systemImage: "doc.on.doc") { app.copy(clip) }
+                            Button("Export PNG…", systemImage: "square.and.arrow.up") { app.export(clip) }
+                        }
+                }
+                else { ProgressView().controlSize(.small) }
+            }.clipped()
+            Divider()
+            HStack(spacing: 8) {
+                Menu("Image Background", systemImage: "circle.lefthalf.filled") {
+                    Picker("Background", selection: $backdrop) {
+                        Text("Checkerboard").tag(0); Text("Light").tag(1); Text("Dark").tag(2)
+                    }
+                }.labelStyle(.iconOnly).menuIndicator(.hidden).fixedSize().help("Image background")
+                Text("\(clip.width) × \(clip.height)").font(.caption).foregroundStyle(.secondary).monospacedDigit().lineLimit(1)
+                Spacer(minLength: 0)
+                Button(app.copiedClipID == clip.id ? "Copied" : "Copy",
+                       systemImage: app.copiedClipID == clip.id ? "checkmark" : "doc.on.doc") { app.copy(clip) }
+                    .help("Copy image (⌘C)").accessibilityInputLabels(["Copy", "Copy Image"])
+            }.buttonStyle(.bordered).controlSize(.small).padding(10).background(.bar)
+        }
+        .task(id: clip.id) {
+            let url = app.store.url(for: clip)
+            do {
+                let cg = try await Task.detached(priority: .userInitiated) { try ImageCore.load(url) }.value
+                guard !Task.isCancelled else { return }
+                image = NSImage(cgImage: cg, size: NSSize(width: cg.width, height: cg.height))
+            } catch {
+                guard !Task.isCancelled else { return }
+                failure = error.localizedDescription
+            }
+        }
+    }
+}
+
+/// Native dragging keeps file/PNG export and internal group moves on the same path.
+struct ReferenceImage: NSViewRepresentable {
+    let app: AppController
+    let clip: Clip
+    let image: NSImage
+
+    func makeNSView(context: Context) -> ImageView {
+        let view = ImageView()
+        view.imageScaling = .scaleProportionallyUpOrDown
+        for axis: NSLayoutConstraint.Orientation in [.horizontal, .vertical] {
+            view.setContentHuggingPriority(.defaultLow, for: axis)
+            view.setContentCompressionResistancePriority(.defaultLow, for: axis)
+        }
+        return view
+    }
+    func updateNSView(_ view: ImageView, context: Context) {
+        view.app = app; view.clip = clip; view.image = image
+        view.setAccessibilityLabel("\(clip.name). Drag to copy this image to another app.")
+    }
+
+    final class ImageView: NSImageView, NSDraggingSource {
+        weak var app: AppController?
+        var clip: Clip?
+        private var mouseStart: CGPoint?
+        override var acceptsFirstResponder: Bool { true }
+        override var needsPanelToBecomeKey: Bool { true }
+        override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+        override func mouseDown(with event: NSEvent) {
+            window?.makeKey(); window?.makeFirstResponder(self)
+            mouseStart = event.locationInWindow
+        }
+        override func mouseUp(with event: NSEvent) { mouseStart = nil }
+        override func mouseDragged(with event: NSEvent) {
+            guard let start = mouseStart, hypot(event.locationInWindow.x - start.x, event.locationInWindow.y - start.y) >= 4,
+                  let app, let clip, let image, let writer = app.clipPasteboardItem(clip) else { return }
+            mouseStart = nil
+            let item = NSDraggingItem(pasteboardWriter: writer)
+            let scale = min(bounds.width / image.size.width, bounds.height / image.size.height)
+            let size = CGSize(width: image.size.width * scale, height: image.size.height * scale)
+            item.setDraggingFrame(CGRect(x: bounds.midX - size.width / 2, y: bounds.midY - size.height / 2, width: size.width, height: size.height), contents: image)
+            beginDraggingSession(with: [item], event: event, source: self)
+        }
+        func draggingSession(_ session: NSDraggingSession, sourceOperationMaskFor context: NSDraggingContext) -> NSDragOperation {
+            context == .withinApplication ? [.copy, .move] : .copy
+        }
+        func draggingSession(_ session: NSDraggingSession, willBeginAt screenPoint: NSPoint) {
+            app?.isDraggingClips = true
+            app?.draggedClipIDs = clip.map { [$0.id] } ?? []
+        }
+        func draggingSession(_ session: NSDraggingSession, endedAt screenPoint: NSPoint, operation: NSDragOperation) {
+            app?.isDraggingClips = false; app?.draggedClipIDs = []
+        }
+    }
+}
