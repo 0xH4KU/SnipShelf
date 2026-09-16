@@ -1,6 +1,6 @@
 # Validation
 
-Last automated check: 2026-09-14. Host: Apple Silicon, macOS 27.0 (26A428). Builds use the locally installed Xcode and macOS SDK. Deployment target: macOS 26. Local app bundles are ad-hoc signed, not notarized. Manual evidence is dated below.
+Last automated check: 2026-09-16. Host: Apple Silicon, macOS 27.0 (26A428). Builds use the locally installed Xcode and macOS SDK. Deployment target: macOS 26. Local app bundles are ad-hoc signed, not notarized. Manual evidence is dated below.
 
 ## Automated checks
 
@@ -12,10 +12,12 @@ DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test
 codesign --verify --strict dist/SnipShelf.app
 ```
 
-The suite contains **51 behavioral tests** plus one optional interface-rendering check covering:
+The suite contains **56 behavioral tests** plus one optional interface-rendering check covering:
 
 | Area | Coverage |
 | --- | --- |
+| Interface polish | Native shortcut-button keyboard activation and cancellation; copy feedback follows the most recently copied image, survives an earlier timer, and expires. Optional renders check compact capture confirmation sizing, selected shelf controls and high-contrast appearances. |
+| Shelf organization | Native scroll/selection restoration across empty groups, keyboard selection, and tucking/reopening; stale selections are filtered. Moves, dissolution, group creation, and image rename undo preserve newer imports, group order, and original PNG bytes. Failed undo/rename writes leave records and undo history intact. Native window titles follow renames and undo; cached-view pixels verify independent reference backgrounds after preference changes and reopening. |
 | Freehand assistance | Stronger adaptive stabilization, bounded edge nudges at multiple scales, crossing edges, ambiguous/dense regions, sharp turns, Option bypass, and late Vision results. Each drag adds at most one point; review output matches the displayed path. |
 | Subject mask | Instance selection follows the lasso in top-left image coordinates and excludes background labels. Alpha application preserves white subject interiors, source colors, existing transparency, soft alpha, holes and concave selection bounds; mismatched mask dimensions are rejected. Blank-image fallback and existing opt-out preferences are covered. |
 | Review lifecycle | Default-on subject masking can be toggled back to exact original PNG pixels, including after refinement undo. The editable lasso and crop registration survive masking. Pending work cannot save an unseen result or resurrect a reset/confirmed selection. Lifecycle checks use a fixed mask independently of Vision's versioned recognition model. |
@@ -29,9 +31,10 @@ The suite contains **51 behavioral tests** plus one optional interface-rendering
 | Local storage | New-clip selection and failed-save selection preservation, persistence, deletion/undo, batch deletion with newer clips, missing assets, failed writes, corrupt index recovery, and 100 mixed-size clips. |
 | Reference groups | Version-1 migration, atomic group/membership writes, rename validation, dissolution without image loss, pending-import destinations and deletion undo. Native grid checks cover 0/1/2/3/5/8 clips, uncropped separate previews, +N without a repeated caption count, minimum-width geometry, keyboard and click opening, selection boundaries, export index mapping, and PNG/JPEG drops into the intended group. Moving a newer reference keeps the main image and does not duplicate PNGs. |
 | Drag import | Internal drags are rejected without writes; independent external PNG drops still import. |
+| Multiple references | Group windows and individual image pins coexist, reuse an existing window for the same target, and keep selection separate from the Shelf. Native checks cover per-window frame restoration, hide/show, pin buttons, keyboard routing, live membership and rename updates, internal drops into populated/empty group windows without duplicate PNGs, and closing stale references after deletion/dissolution. Light/dark renders at compact sizes are available through `SNIPSHELF_RENDER_QA` in the reference-window test. |
 | Menu icon | Template rendering at 1× and 2×, transparent padding, opaque sticker, and a transparent peeled-corner crease. |
 | Compact capture review | Actual canvas events open a small floating preview and hide the editor; Refine preserves the outline, zoom and pan; Touch Up reopens the same canvas without resetting the mask. Brush undo/redo stays in the editor, toggling the mask retains edits, refinement undo restores edited pixels, and Return saves those exact PNG bytes once; Escape and window-close cancel. Placement stays on screen for corner selections. Screen capture and recropping share this path. |
-| AppKit interaction | Canvas mouse event flows, actual-size scaling, shelf move/dock state, continuous inward pulls from both edges, preview navigation/closing, native preview Fit/100%, background-picker insets after repeated zoom resets and resizing, and clear thumbnail backgrounds. |
+| AppKit interaction | Canvas mouse event flows, actual-size scaling, shelf move/dock state, continuous inward pulls from both edges, one-third docking thresholds at 300/450/600-point shelf widths (including retreat to cancel), preview navigation/closing, native preview Fit/100%, background-picker insets after repeated zoom resets and resizing, and clear thumbnail backgrounds. |
 
 At the default 55% steadiness, freehand tests bound filter lag to 1.8 screen points and edge correction to 1.1 screen points. The tested combined trace stays within 2.9 points of the pointer. On the alternating-jitter fixture, filtered vertical variation is below 8% of the input while deliberate fast motion follows immediately. These are synthetic behavior checks, not proof of subjective smoothness on arbitrary artwork or devices.
 
@@ -86,11 +89,11 @@ not committed as test fixtures.
 
 ```sh
 ./scripts/build_and_run.sh --release
-python3 scripts/check_release.py dist/SnipShelf-0.1.1-arm64.zip
-(cd dist && shasum -a 256 -c SnipShelf-0.1.1-arm64.zip.sha256)
+python3 scripts/check_release.py dist/SnipShelf-0.2.0-arm64.zip
+(cd dist && shasum -a 256 -c SnipShelf-0.2.0-arm64.zip.sha256)
 ```
 
-The check verifies the exact bundled file list, version 0.1.1/build 2, arm64
+The check verifies the exact bundled file list, version 0.2.0/build 3, arm64
 architecture, and the ad-hoc signature after extraction. It rejects common
 local-user/build paths and private-key markers in bundled files. Only the app
 executable, plist, icon, MIT license, and signature resources are distributed;
@@ -99,6 +102,22 @@ This targeted scan does not establish complete anonymity. The downloaded-app
 Gatekeeper flow still needs a manual check on another Mac.
 
 ## Interface rendering
+
+The September 16 polish adds labeled Capture/Import actions, compact group
+navigation, a selection menu, native preview control groups, shared background
+choices, and keyboard-accessible shortcut recording. Checks also cover copy
+confirmation timing and the compact capture-review height. Current before/after
+render evidence is under ignored `.local/ux-before/` and `.local/ux-after/`.
+Computer Use returned `Trusted RPC service is not configured: sky`; live pointer
+feel and compositor-backed glass appearance were not reverified in this pass.
+
+The organization follow-up passed all 57 suite checks. It adds location memory,
+undo for organization and renaming, independent saved reference backgrounds, and
+image renaming with live window titles. Native checks cover remounting after an
+empty group, waiting for the shelf expansion before restoring scroll, and
+revealing keyboard selections at the top/bottom edge. One earlier full run hit a
+timing failure in the existing reference-drag test; that test and the complete
+suite both passed on rerun. Logs are under ignored `.local/organization-*.log`.
 
 To render the shelf, settings, selection comparison and preview with synthetic artwork:
 
@@ -138,6 +157,36 @@ transparency checks. Light/dark renders under `.local/group-hover-qa/` include
 isolated cards at rest and on hover, confirming rounded outlines with clear
 interiors. The motion uses the prototype's 220 ms easing and offsets and becomes
 immediate with Reduce Motion. Live pointer verification remains unavailable.
+
+On September 16, group reference windows and individual image pins passed all
+53 suite checks. Native event sequences also cover dragging a group card or an
+image's pin handle to place a reference, reusing existing windows, click/jitter
+separation, and Escape restoring position and visibility. These gestures leave
+the drag pasteboard, original clips, membership, and Shelf selection untouched.
+The focused reference test also verified native hit-testing of the pin button;
+compact light/dark renders are under `.local/reference-qa/`.
+The rebuilt, signature-verified app launched successfully. Computer Use returned
+`Trusted RPC service is not configured: sky`, so physical pointer interaction
+remains unverified; the checks exercise native window, selection and drop APIs.
+
+The reference-motion follow-up verifies the live tracking loop before release:
+the lifted card preserves its grab offset, cannot steal focus, and creates no
+full reference window while dragging. Native animation checks sample opacity
+mid-transition, verify final geometry and preview cleanup, return-to-source
+cancellation, interrupted movement continuing from its current position, and
+close-during-opening without a stale completion reopening the window. All 53
+suite checks passed; compact light/dark renders are under
+`.local/reference-motion-qa/`. The transition uses [AppKit animation contexts](https://developer.apple.com/documentation/appkit/nsanimationcontext)
+and short crossfades when Reduce Motion is enabled. Single-image windows retain
+a thumbnail while the original loads. Computer Use still reports the unavailable
+`sky` service, so physical pointer feel remains a manual check.
+
+The card-to-window expansion also checks that the actual window begins at the
+card's bounds and shares its intermediate outline while growing for 0.3 seconds.
+Closing or retargeting during expansion preserves the intended full window size.
+Grid metrics update before the viewport resizes, including the narrow starting
+frame, without invalid flow-layout sizes. The follow-up renders are under
+`.local/reference-morph-qa/`.
 
 The removed-area guide was rendered on the supplied red-background artwork
 using its local source file and a reconstructed coarse lasso. The guide compares
