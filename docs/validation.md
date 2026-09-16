@@ -12,7 +12,7 @@ DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test
 codesign --verify --strict dist/SnipShelf.app
 ```
 
-The suite contains **58 behavioral tests** plus optional interface-rendering and real-image subject-mask checks covering:
+The suite contains **59 behavioral tests** plus optional interface-rendering and real-image subject-mask checks covering:
 
 | Area | Coverage |
 | --- | --- |
@@ -26,6 +26,7 @@ The suite contains **58 behavioral tests** plus optional interface-rendering and
 | Snip Lab | Classic/Fluid comparison with settings retained across images, repeated strokes on the real canvas, in-window review matching exported crop pixels, Refine/Undo, Next Try and Escape resetting the same source, and unreadable files preserving the current trial. |
 | Fluid drawing | Timestamp-based smoothing at 60, 120, 240 and 1000 Hz, scale equivalence, immediate start, bounded lag, deliberate fast sweeps, and stale-velocity reset after pauses. Native canvas events cover the closing cue, 9-screen-point closing reach at different zoom levels, Option bypass, exact release endpoints, and refinement/export consistency. Enabled by default in both apps; Classic remains available and preferences persist. |
 | Manual mask touch-up | Restore/Erase connect sparse pointer events and preserve source colors, partial alpha, transparency and the lasso boundary. Whole-stroke undo/redo, toggle preservation, cancelled strokes, pending-recognition guards, empty-result rollback, refinement undo and exact saved pixels are covered. Native canvas events verify brush registration in Original/Cutout at different zooms, Space-drag panning without painting, Escape leaving the brush, and keyboard undo/redo. |
+| Capture keyboard controls | Native window events with a slider holding focus exercise R/E/V, bracket brush sizing including a Chinese-input character, Command–Plus/Equal/Minus, Fit and actual pixels. Two distinct strokes verify that Command–Z undoes exactly one stroke and Command–Shift–Z restores its exact PNG bytes. Zoom, size, tool changes and undo stay blocked during a stroke. The regression failed on the previous implementation. |
 | Removed-area guide | Native renders verify visible cyan hatching on a red background, correct crop/zoom registration, no markings on retained pixels or outside the lasso, and immediate brush updates. Alpha-loss checks distinguish removed pixels from original transparency and soft alpha. Cutout rendering and saved PNGs stay unchanged; the guide preference survives opening another image. |
 | Image processing | Coordinate mapping, orientation, concave and self-intersecting selections, invalid input, transparency, anti-aliasing, and PNG round-trips. |
 | Local storage | New-clip selection and failed-save selection preservation, persistence, deletion/undo, batch deletion with newer clips, missing assets, failed writes, corrupt index recovery, and 100 mixed-size clips. |
@@ -127,6 +128,15 @@ check above and light/dark rendering at 440 × 540 and 360 × 440 points. Direct
 Computer Use plugin inspection confirmed the installed app's editable floating
 preview and integrated brush controls. The active user edit was retained.
 Build/test logs and renders are under ignored `.local/unified-review/`.
+
+The keyboard follow-up passed all 61 checks. Small-window light/dark renders were
+checked again after adding visible Undo/Redo buttons and complete shortcut hints.
+Direct Computer Use plugin calls against an isolated QA shelf verified R/E/V,
+both bracket keys after moving the brush slider, Command–Equal/Minus/0/1, real
+Erase/Restore strokes, and Command–Z/Command–Shift–Z restoring and removing the
+same visible stroke. The QA selection was cancelled and the verified build was
+installed in `/Applications/SnipShelf.app`. Logs and renders are under ignored
+`.local/shortcuts-qa/`.
 
 To repeat the optional subject-mask check with a local manifest of image paths
 and lasso points (the supplied images are not committed):

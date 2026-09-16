@@ -59,6 +59,9 @@ Zoom in for detail, adjust brush size in source pixels (or use `[` / `]`), and
 hold Space while dragging to pan. Command–Z undoes a whole stroke;
 Command–Shift–Z redoes it. **View** or Escape leaves the brush without clearing
 the selection. Switching Remove Background off and back on preserves your touch-ups.
+In Capture Preview, **R / E / V** select Restore / Erase / View; **Command–Plus / Minus**
+zoom, **Command–0** fits, and **Command–1** shows actual pixels. Shortcuts also work
+after clicking the brush slider or preview controls; Undo and Redo have visible buttons.
 In **Original** view, **Show removed areas** is on by default: cyan stripes mark
 pixels removed inside your lasso, including brush edits, while kept pixels retain
 their original colors. Toggle it off for an unobstructed comparison. This guide

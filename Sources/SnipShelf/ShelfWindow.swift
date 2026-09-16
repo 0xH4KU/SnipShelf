@@ -4,13 +4,19 @@ import Observation
 
 final class ShelfPanel: NSPanel {
     var onKey: ((NSEvent) -> Bool)?
+    weak var captureCanvas: CanvasNSView?
     var referenceTransition: ReferenceLiftWindow?
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { false }
+    override func sendEvent(_ event: NSEvent) {
+        if event.type == .keyDown, captureCanvas?.handleKey(event) == true { return }
+        super.sendEvent(event)
+    }
     override func keyDown(with event: NSEvent) {
         if onKey?(event) != true { super.keyDown(with: event) }
     }
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        if captureCanvas?.handleKey(event) == true { return true }
         if onKey?(event) == true { return true }
         return super.performKeyEquivalent(with: event)
     }

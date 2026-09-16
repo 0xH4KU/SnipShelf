@@ -224,6 +224,78 @@ final class InteractionTests: XCTestCase {
         }
     }
 
+    @MainActor func testCaptureShortcutsWorkAfterControlsTakeFocus() async throws {
+        _ = NSApplication.shared
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let suite = "org.snipshelf.tests." + UUID().uuidString
+        let preferences = UserDefaults(suiteName: suite)!
+        defer { try? FileManager.default.removeItem(at: root); preferences.removePersistentDomain(forName: suite) }
+        let app = AppController(store: ShelfStore(root: root), preferences: preferences)
+        let source = try SnipShelfTests().image(width: 100, height: 100)
+        app.presentCanvas(image: source, frame: CGRect(x: 100, y: 100, width: 640, height: 480), screenCapture: false, name: "Shortcuts")
+        let model = try XCTUnwrap(app.captureModel)
+        defer { model.cancel() }
+        try model.prepareReview(points: SnipShelfTests().rect(10, 10, 80, 80))
+        await model.correctionTask?.value
+        let panel = try XCTUnwrap(NSApp.windows.first { $0.title == "Capture Preview" && $0.isVisible })
+        try await Task.sleep(for: .milliseconds(80))
+        let slider = NSSlider(value: 24, minValue: 1, maxValue: 128, target: nil, action: nil)
+        panel.contentView?.addSubview(slider)
+        func key(_ text: String, _ code: UInt16, _ flags: NSEvent.ModifierFlags = []) -> NSEvent {
+            NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: flags, timestamp: 1,
+                windowNumber: panel.windowNumber, context: nil, characters: text,
+                charactersIgnoringModifiers: text, isARepeat: false, keyCode: code)!
+        }
+        func send(_ text: String, _ code: UInt16, _ flags: NSEvent.ModifierFlags = []) {
+            XCTAssertTrue(panel.makeFirstResponder(slider))
+            panel.sendEvent(key(text, code, flags))
+        }
+        send("e", 14)
+        XCTAssertEqual(model.maskTool, .erase)
+        send("]", 30)
+        XCTAssertEqual(model.brushSize, 26)
+        send("［", 33) // A Chinese input source must not swallow the physical bracket key.
+        XCTAssertEqual(model.brushSize, 24)
+        send("r", 15)
+        XCTAssertEqual(model.maskTool, .restore)
+        send("v", 9)
+        XCTAssertEqual(model.maskTool, .view)
+        send("=", 24, .command)
+        XCTAssertEqual(model.reviewScale, 1.25)
+        send("+", 24, [.command, .shift])
+        XCTAssertEqual(model.reviewScale, 1.5625)
+        send("-", 27, .command)
+        XCTAssertEqual(model.reviewScale, 1.25)
+        send("1", 18, .command)
+        XCTAssertTrue(model.reviewActualSize)
+        send("0", 29, .command)
+        XCTAssertFalse(model.reviewActualSize)
+        XCTAssertEqual(model.reviewScale, 1)
+        XCTAssertEqual(model.scale, 1, "Preview shortcuts must not move the source canvas")
+
+        model.maskTool = .erase; model.brushSize = 10
+        model.beginMaskStroke(at: CGPoint(x: 30, y: 40)); model.endMaskStroke()
+        let firstStroke = try ImageCore.png(XCTUnwrap(model.reviewImage))
+        model.beginMaskStroke(at: CGPoint(x: 60, y: 40)); model.endMaskStroke()
+        let secondStroke = try ImageCore.png(XCTUnwrap(model.reviewImage))
+        XCTAssertNotEqual(firstStroke, secondStroke)
+        send("z", 6, .command)
+        XCTAssertEqual(try ImageCore.png(XCTUnwrap(model.reviewImage)), firstStroke, "Undo must remove exactly one stroke even when a slider has focus")
+        XCTAssertTrue(panel.makeFirstResponder(slider))
+        XCTAssertTrue(panel.performKeyEquivalent(with: key("z", 6, [.command, .shift])))
+        XCTAssertEqual(try ImageCore.png(XCTUnwrap(model.reviewImage)), secondStroke)
+
+        model.beginMaskStroke(at: CGPoint(x: 45, y: 60))
+        send("=", 24, .command); send("]", 30); send("r", 15); send("z", 6, .command)
+        XCTAssertEqual(model.reviewScale, 1)
+        XCTAssertEqual(model.brushSize, 10)
+        XCTAssertEqual(model.maskTool, .erase)
+        XCTAssertTrue(model.paintingMask)
+        model.cancelMaskStroke()
+        XCTAssertEqual(try ImageCore.png(XCTUnwrap(model.reviewImage)), secondStroke)
+        XCTAssertTrue(app.store.clips.isEmpty)
+    }
+
     @MainActor func testMenuBarStickerRendersAsATemplateAtBothDisplayScales() throws {
         _ = NSApplication.shared
         let icon = AppController.menuBarIcon()

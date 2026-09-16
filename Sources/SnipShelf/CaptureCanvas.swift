@@ -5,7 +5,12 @@ import Observation
 @MainActor @Observable
 final class CanvasModel {
     enum Mode: String, CaseIterable { case lasso = "Lasso", polygon = "Polygon" }
-    enum MaskTool: String, CaseIterable { case view = "View", restore = "Restore", erase = "Erase" }
+    enum MaskTool: String, CaseIterable {
+        case view = "View", restore = "Restore", erase = "Erase"
+        var shortcut: String {
+            switch self { case .view: "V"; case .restore: "R"; case .erase: "E" }
+        }
+    }
     let session: CaptureSession
     let isScreen: Bool
     var mode: Mode = .lasso
@@ -265,9 +270,9 @@ struct CaptureReviewView: View {
                 Button("100%") { model.reviewActualSize = true; model.reviewScale = 1; model.reviewOffset = .zero }
                     .help("Actual pixels (⌘1)").keyboardShortcut("1", modifiers: .command)
                 Button("Zoom Out", systemImage: "minus.magnifyingglass") { model.reviewScale = max(0.1, model.reviewScale / 1.25) }
-                    .labelStyle(.iconOnly).help("Zoom out")
+                    .labelStyle(.iconOnly).help("Zoom out (⌘−)")
                 Button("Zoom In", systemImage: "plus.magnifyingglass") { model.reviewScale = min(16, model.reviewScale * 1.25) }
-                    .labelStyle(.iconOnly).help("Zoom in · Pinch to zoom, scroll to pan")
+                    .labelStyle(.iconOnly).help("Zoom in (⌘+ or ⌘=) · Pinch to zoom, scroll to pan")
             }.buttonStyle(.borderless).controlSize(.small).padding(12).disabled(model.paintingMask)
             Divider()
             SelectionCanvas(model: model, reviewOnly: true).clipped()
@@ -275,18 +280,21 @@ struct CaptureReviewView: View {
             Divider()
             VStack(alignment: .leading, spacing: 10) {
                 SubjectMaskControl(model: model)
-                HStack(spacing: 10) {
+                HStack(spacing: 6) {
                     Picker("Touch-up tool", selection: $model.maskTool) {
-                        ForEach(CanvasModel.MaskTool.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+                        ForEach(CanvasModel.MaskTool.allCases, id: \.self) { Text("\($0.rawValue) (\($0.shortcut))").tag($0) }
                     }.pickerStyle(.segmented).labelsHidden().disabled(!model.canTouchUp)
                     Button("Undo", systemImage: "arrow.uturn.backward") { model.undoSelection() }
                         .disabled(!model.canUndo).keyboardShortcut("z", modifiers: .command)
+                        .help("Undo last edit (⌘Z)")
                     Button("Redo", systemImage: "arrow.uturn.forward") { model.redoMaskStroke() }
                         .disabled(!model.canTouchUp || !model.canRedoMask).keyboardShortcut("z", modifiers: [.command, .shift])
-                }.labelStyle(.iconOnly)
+                        .help("Redo last stroke (⇧⌘Z)")
+                }.labelStyle(.titleOnly)
                 HStack(spacing: 10) {
-                    Text("Brush")
+                    Text("Brush [ / ]")
                     Slider(value: $model.brushSize, in: 1...128, step: 1).accessibilityLabel("Brush size")
+                        .help("[ makes the brush smaller; ] makes it larger")
                     Text("\(Int(model.brushSize)) px").monospacedDigit().frame(width: 48, alignment: .trailing)
                 }.font(.caption).disabled(!model.editingMask)
                 HStack {
@@ -297,8 +305,11 @@ struct CaptureReviewView: View {
                         Text("\(image.width) × \(image.height) px").foregroundStyle(.secondary).monospacedDigit()
                     }
                 }.font(.caption)
-                Text(model.editingMask ? "[ / ] resize · Space-drag pans · Esc leaves the brush" : "Drag to pan · Pinch to zoom · Choose Restore or Erase to touch up")
-                    .font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("⌘+ / ⌘− zoom · ⌘Z undo · ⇧⌘Z redo")
+                    Text(model.editingMask ? "Space-drag pans · Esc leaves the brush" : "Drag to pan · Pinch to zoom")
+                }.font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 if let error = model.error { Text(error).font(.caption).foregroundStyle(.red).lineLimit(2).help(error) }
                 Divider()
                 HStack(spacing: 8) {
@@ -362,7 +373,7 @@ struct SelectionReviewTools: View {
             VStack(alignment: .leading, spacing: 8) {
                 Text("Touch Up").font(.headline)
                 Picker("Touch-up tool", selection: $model.maskTool) {
-                    ForEach(CanvasModel.MaskTool.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+                    ForEach(CanvasModel.MaskTool.allCases, id: \.self) { Text("\($0.rawValue) (\($0.shortcut))").tag($0) }
                 }.pickerStyle(.segmented).labelsHidden()
                 if model.maskTool != .view {
                     HStack {
@@ -420,12 +431,12 @@ struct CaptureView: View {
                                         }
                                     Divider().frame(height: 18)
                                 }
-                                Button("Fit") { model.fit() }.help("Fit image").disabled(model.selecting)
-                                Button("100%") { model.actualSize = true; model.scale = 1; model.offset = .zero }.disabled(model.selecting)
+                                Button("Fit") { model.fit() }.help("Fit image (⌘0)").disabled(model.selecting)
+                                Button("100%") { model.actualSize = true; model.scale = 1; model.offset = .zero }.help("Actual pixels (⌘1)").disabled(model.selecting)
                                 Button { model.scale = max(0.1, model.scale / 1.25) } label: { Image(systemName: "minus.magnifyingglass") }
-                                    .help("Zoom out").accessibilityLabel("Zoom out").disabled(model.selecting)
+                                    .help("Zoom out (⌘−)").accessibilityLabel("Zoom out").disabled(model.selecting)
                                 Button { model.scale = min(16, model.scale * 1.25) } label: { Image(systemName: "plus.magnifyingglass") }
-                                    .help("Zoom in").accessibilityLabel("Zoom in").disabled(model.selecting)
+                                    .help("Zoom in (⌘+ or ⌘=)").accessibilityLabel("Zoom in").disabled(model.selecting)
                                 if !model.reviewing {
                                     Divider().frame(height: 18)
                                     Button { model.undoSelection() } label: { Image(systemName: "arrow.uturn.backward") }
@@ -565,10 +576,14 @@ final class CanvasNSView: NSView {
         setAccessibilityElement(true)
         setAccessibilityRole(.image)
         setAccessibilityLabel(reviewOnly ? "Editable cutout preview" : "Image selection canvas")
-        setAccessibilityHelp((reviewOnly ? "Drag to pan or pinch to zoom the selection. " : "Choose Lasso and draw freely, or Polygon and click points. Release or press Return to review. ") + "Restore and Erase touch up the mask. Cyan stripes mark removed pixels in Original view. Space-drag pans; brackets resize the brush; Command-Z undoes. Keep Clip saves; Refine Outline retraces; Redraw clears the outline. Escape leaves the brush or cancels capture.")
+        setAccessibilityHelp((reviewOnly ? "Drag to pan or pinch to zoom the selection. " : "Choose Lasso and draw freely, or Polygon and click points. Release or press Return to review. ") + "R restores pixels; E erases; V leaves the brush. Command-plus/minus zoom; Command-0 fits; Command-1 shows actual pixels. Cyan stripes mark removed pixels in Original view. Space-drag pans; brackets resize the brush; Command-Z undoes; Command-Shift-Z redoes. Keep Clip saves; Refine Outline retraces; Redraw clears the outline. Escape leaves the brush or cancels capture.")
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
-    override func viewDidMoveToWindow() { super.viewDidMoveToWindow(); window?.makeFirstResponder(self) }
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        (window as? ShelfPanel)?.captureCanvas = self
+        window?.makeFirstResponder(self)
+    }
     override func resetCursorRects() {
         addCursorRect(bounds, cursor: panStart != nil ? .closedHand : (spaceDown || (reviewOnly && !model.editingMask) ? .openHand : .crosshair))
     }
@@ -933,16 +948,58 @@ final class CanvasNSView: NSView {
     }
     override func mouseExited(with event: NSEvent) { hover = nil; needsDisplay = true }
     override func keyDown(with event: NSEvent) {
-        if event.modifierFlags.contains(.command), event.charactersIgnoringModifiers?.lowercased() == "z" {
-            if event.modifierFlags.contains(.shift) { model.redoMaskStroke() } else { model.undoSelection() }
-            refresh(); return
+        if !handleKey(event) { super.keyDown(with: event) }
+    }
+    @discardableResult func handleKey(_ event: NSEvent) -> Bool {
+        guard !(window?.firstResponder is NSTextView),
+              event.modifierFlags.intersection([.control, .option]).isEmpty else { return false }
+        var key = event.charactersIgnoringModifiers?.lowercased() ?? ""
+        // Keep canvas shortcuts usable while a non-Latin input source is active.
+        if key.isEmpty || key.unicodeScalars.contains(where: { !$0.isASCII }) {
+            switch event.keyCode {
+            case 6: key = "z"
+            case 9: key = "v"
+            case 14: key = "e"
+            case 15: key = "r"
+            case 18, 83: key = "1"
+            case 29, 82: key = "0"
+            case 24, 69: key = "+"
+            case 27, 78: key = "-"
+            case 30: key = "]"
+            case 33: key = "["
+            default: break
+            }
         }
-        if model.reviewing, event.keyCode == 49, !model.paintingMask {
-            spaceDown = true; window?.invalidateCursorRects(for: self); needsDisplay = true; return
+        if event.modifierFlags.contains(.command) {
+            switch key {
+            case "z":
+                if event.modifierFlags.contains(.shift) { model.redoMaskStroke() } else { model.undoSelection() }
+            case "+", "=", "-":
+                zoom(by: key == "-" ? 1 / 1.25 : 1.25, at: CGPoint(x: bounds.midX, y: bounds.midY))
+            case "0", "1":
+                guard !model.selecting, !model.paintingMask else { return true }
+                if reviewOnly { model.fitReview(); model.reviewActualSize = key == "1" }
+                else { model.fit(); model.actualSize = key == "1" }
+            default: return false
+            }
+            refresh(); return true
         }
-        if model.editingMask, !model.paintingMask, let key = event.charactersIgnoringModifiers, key == "[" || key == "]" {
-            model.brushSize = min(128, max(1, model.brushSize + (key == "[" ? -2 : 2)))
-            needsDisplay = true; return
+        if model.reviewing {
+            if ["v", "r", "e", "[", "]"].contains(key) {
+                guard model.canTouchUp, !model.paintingMask else { return true }
+                switch key {
+                case "v": model.leaveMaskEditing()
+                case "r": model.maskTool = .restore
+                case "e": model.maskTool = .erase
+                default:
+                    if model.editingMask { model.brushSize = min(128, max(1, model.brushSize + (key == "[" ? -2 : 2))) }
+                }
+                refresh(); return true
+            }
+            if event.keyCode == 49 {
+                if !model.paintingMask { spaceDown = true; window?.makeFirstResponder(self); refresh() }
+                return true
+            }
         }
         switch event.keyCode {
         case 53:
@@ -951,7 +1008,7 @@ final class CanvasNSView: NSView {
             if model.reviewing { model.confirm() }
             else if model.mode == .polygon || continuing { finish() }
         case 48:
-            guard model.mode == .polygon, !model.reviewing, model.snapEnabled, !optionDown, alternatives.count > 1 else { return }
+            guard model.mode == .polygon, !model.reviewing, model.snapEnabled, !optionDown, alternatives.count > 1 else { return false }
             alternativeIndex = (alternativeIndex + 1) % alternatives.count
             let hit = alternatives[alternativeIndex]
             previousHit = hit; snappedPoint = hit.point; hover = hit.point
@@ -960,22 +1017,20 @@ final class CanvasNSView: NSView {
         case 51, 117:
             if model.reviewing {
                 if !reviewOnly { model.reset() }
-                refresh(); return
+                refresh(); return true
             }
 
             if !points.isEmpty { points.removeLast(); model.selecting = !points.isEmpty; needsDisplay = true }
-        default: super.keyDown(with: event)
+        default: return false
         }
+        refresh(); return true
     }
     override func keyUp(with event: NSEvent) {
         if event.keyCode == 49 { spaceDown = false; window?.invalidateCursorRects(for: self); needsDisplay = true }
         else { super.keyUp(with: event) }
     }
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
-        if event.modifierFlags.contains(.command), event.charactersIgnoringModifiers?.lowercased() == "z" {
-            if event.modifierFlags.contains(.shift) { model.redoMaskStroke() } else { model.undoSelection() }
-            refresh(); return true
-        }
+        if handleKey(event) { return true }
         return super.performKeyEquivalent(with: event)
     }
     override func scrollWheel(with event: NSEvent) {

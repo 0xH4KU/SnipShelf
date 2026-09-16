@@ -402,6 +402,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
         panel.contentView = NSHostingView(rootView: CaptureReviewView(model: model, refine: { [weak self] in
             self?.refineCapture()
         }))
+        // Return and Escape also work before SwiftUI mounts the canvas.
         panel.onKey = { [weak model] event in
             guard event.modifierFlags.intersection([.command, .control, .option, .shift]).isEmpty else { return false }
             switch event.keyCode {
