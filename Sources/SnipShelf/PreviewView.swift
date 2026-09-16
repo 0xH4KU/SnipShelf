@@ -19,27 +19,32 @@ private struct PreviewContent: View {
     @State private var zoomReset = 0
     var body: some View {
         VStack(spacing: 0) {
-            HStack(spacing: 14) {
-                HStack(spacing: 6) {
-                    Button { app.movePreview(-1) } label: { Image(systemName: "chevron.left") }
-                        .disabled(app.adjacentPreview(-1) == nil).help("Previous clip (←)").accessibilityLabel("Previous clip")
-                    Button { app.movePreview(1) } label: { Image(systemName: "chevron.right") }
-                        .disabled(app.adjacentPreview(1) == nil).help("Next clip (→)").accessibilityLabel("Next clip")
-                }
+            HStack(spacing: 12) {
+                ControlGroup {
+                    Button("Previous Clip", systemImage: "chevron.left") { app.movePreview(-1) }
+                        .disabled(app.adjacentPreview(-1) == nil).help("Previous clip (←)")
+                    Button("Next Clip", systemImage: "chevron.right") { app.movePreview(1) }
+                        .disabled(app.adjacentPreview(1) == nil).help("Next clip (→)")
+                }.labelStyle(.iconOnly).fixedSize()
                 if let index = app.previewClips.firstIndex(where: { $0.id == clip.id }) {
                     Text("\(index + 1) of \(app.previewClips.count)").font(.callout).foregroundStyle(.secondary).monospacedDigit()
                 }
                 Spacer()
-                Text(app.status ?? "\(clip.width) × \(clip.height)")
-                    .font(.callout).foregroundStyle(.secondary).monospacedDigit()
-                Menu {
+                Button("Pin", systemImage: "pin") { app.openReference(.clip(clip.id)) }
+                    .help("Keep this image in a separate reference window (⇧⌘P)")
+                Button(app.copiedClipID == clip.id ? "Copied" : "Copy",
+                       systemImage: app.copiedClipID == clip.id ? "checkmark" : "doc.on.doc") { app.copy(clip) }
+                    .buttonStyle(.borderedProminent).help("Copy image (⌘C)")
+                    .accessibilityInputLabels(["Copy", "Copy Image"])
+                Menu("Image Actions", systemImage: "ellipsis") {
+                    Button("Rename Image…", systemImage: "pencil") { app.renameClip(clip) }
+                        .disabled(app.store.isReadOnly)
                     Button("Crop a Copy…", systemImage: "crop") { app.previewClip = nil; app.recrop(clip) }
                     Button("Export PNG…", systemImage: "square.and.arrow.up") { app.export(clip) }
-                } label: { Image(systemName: "ellipsis.circle") }
-                    .menuIndicator(.hidden).fixedSize().help("Image actions").accessibilityLabel("Image actions")
-                Button("Copy", systemImage: "doc.on.doc") { app.copy(clip) }
-                    .buttonStyle(.borderedProminent).help("Copy image (⌘C)")
-            }.buttonStyle(.borderless).controlSize(.regular).padding(.horizontal, 20).padding(.vertical, 14)
+                }.labelStyle(.iconOnly).menuIndicator(.hidden).fixedSize().help("Image actions")
+            }.buttonStyle(.bordered).controlSize(.regular).padding(.horizontal, 20).padding(.vertical, 12)
+                .background(.bar)
+            Divider()
             ZStack {
                 ImageBackdrop(style: app.backdrop)
                 if let image {
@@ -48,16 +53,24 @@ private struct PreviewContent: View {
                     ContentUnavailableView("Unable to Open Image", systemImage: "photo.badge.exclamationmark", description: Text(failure))
                 } else { ProgressView().controlSize(.small) }
             }.clipped()
+            Divider()
             HStack(spacing: 12) {
                 Picker("Background", selection: $app.backdrop) {
                     Text("Checkerboard").tag(0); Text("Light").tag(1); Text("Dark").tag(2)
                 }.labelsHidden().pickerStyle(.segmented).fixedSize(horizontal: true, vertical: false)
                 Spacer()
-                Button("Fit") { actualSize = false; zoomReset += 1 }
-                    .keyboardShortcut("0", modifiers: .command).help("Fit image to window (⌘0)")
-                Button("100%") { actualSize = true; zoomReset += 1 }
-                    .keyboardShortcut("1", modifiers: .command).help("Show actual pixels (⌘1) · Pinch to zoom, scroll to pan")
-            }.buttonStyle(.bordered).controlSize(.small).padding(.horizontal, 20).padding(.vertical, 14)
+                ViewThatFits {
+                    Text("\(clip.width) × \(clip.height) px").font(.caption).foregroundStyle(.secondary).monospacedDigit().fixedSize()
+                    Color.clear.frame(width: 0, height: 0)
+                }
+                ControlGroup {
+                    Button("Fit") { actualSize = false; zoomReset += 1 }
+                        .keyboardShortcut("0", modifiers: .command).help("Fit image to window (⌘0)")
+                    Button("100%") { actualSize = true; zoomReset += 1 }
+                        .keyboardShortcut("1", modifiers: .command).help("Show actual pixels (⌘1) · Pinch to zoom, scroll to pan")
+                }.fixedSize()
+            }.buttonStyle(.bordered).controlSize(.small).padding(.horizontal, 20).padding(.vertical, 12)
+                .background(.bar)
         }
         .task(id: clip.id) {
             let url = app.store.url(for: clip)

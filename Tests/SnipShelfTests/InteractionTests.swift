@@ -5,6 +5,59 @@ import UniformTypeIdentifiers
 @testable import SnipShelf
 
 final class InteractionTests: XCTestCase {
+    @MainActor func testShortcutKeyboardActivationAndCopyFeedback() async throws {
+        _ = NSApplication.shared
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let suite = "org.snipshelf.tests." + UUID().uuidString
+        let preferences = UserDefaults(suiteName: suite)!
+        let store = ShelfStore(root: root)
+        let app = AppController(store: store, preferences: preferences)
+        let recorder = ShortcutRecorder.RecorderView(app: app)
+        let window = NSWindow(contentRect: CGRect(x: 0, y: 0, width: 200, height: 60), styleMask: .titled, backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false; window.contentView = recorder
+        let board = NSPasteboard.general
+        let savedItems = (board.pasteboardItems ?? []).map { source in
+            let item = NSPasteboardItem()
+            for type in source.types { if let data = source.data(forType: type) { item.setData(data, forType: type) } }
+            return item
+        }
+        defer {
+            window.close()
+            board.clearContents(); board.writeObjects(savedItems)
+            try? FileManager.default.removeItem(at: root)
+            preferences.removePersistentDomain(forName: suite)
+        }
+        func key(_ code: UInt16) throws -> NSEvent {
+            try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0,
+                windowNumber: window.windowNumber, context: nil, characters: "", charactersIgnoringModifiers: "", isARepeat: false, keyCode: code))
+        }
+        recorder.keyDown(with: try key(49))
+        XCTAssertTrue(recorder.recording, "Space must activate the focused shortcut button")
+        XCTAssertNil(store.message, "Activation must not try to register Space as a shortcut")
+        XCTAssertTrue(recorder.performKeyEquivalent(with: try key(53)))
+        XCTAssertFalse(recorder.recording)
+        XCTAssertEqual(recorder.title, app.shortcutLabel)
+        XCTAssertEqual(recorder.accessibilityValue() as? String, app.shortcutLabel)
+        XCTAssertTrue(recorder.accessibilityPerformPress())
+        XCTAssertTrue(recorder.recording)
+        window.makeFirstResponder(nil)
+        XCTAssertFalse(recorder.recording, "Leaving the control cancels recording")
+
+        let first = try store.add(SnipShelfTests().image(), name: "First")
+        let second = try store.add(SnipShelfTests().image(), name: "Second")
+        app.copy(first)
+        XCTAssertEqual(app.copiedClipID, first.id)
+        XCTAssertNotNil(board.data(forType: .png))
+        try await Task.sleep(for: .milliseconds(600))
+        app.copy(second)
+        XCTAssertEqual(app.copiedClipID, second.id)
+        try await Task.sleep(for: .milliseconds(1600))
+        XCTAssertEqual(app.copiedClipID, second.id, "An earlier copy must not clear the latest feedback")
+        try await Task.sleep(for: .milliseconds(500))
+        XCTAssertNil(app.copiedClipID)
+        XCTAssertNil(app.status)
+    }
+
     @MainActor func testCaptureReviewRestoresDesktopAndKeepsSelectionUntilConfirmed() async throws {
         _ = NSApplication.shared
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
@@ -458,6 +511,9 @@ final class InteractionTests: XCTestCase {
             try await Task.sleep(for: .milliseconds(250))
             window.layoutIfNeeded(); view.layoutSubtreeIfNeeded(); view.displayIfNeeded()
             defer { window.close() }
+            if name.hasPrefix("capture-review") {
+                XCTAssertEqual(view.bounds.height, size.height, accuracy: 1, "The cutout must fit the compact confirmation window")
+            }
             if hover {
                 func descendants(_ view: NSView) -> [NSView] { [view] + view.subviews.flatMap(descendants) }
                 let card = try XCTUnwrap(descendants(view).compactMap { $0 as? ShelfCollection.CardView }.first { $0.folderID != nil })
@@ -481,6 +537,13 @@ final class InteractionTests: XCTestCase {
             try await render(NSHostingView(rootView: ShelfView(app: app)), size: CGSize(width: 340, height: 440), name: "shelf-" + suffix, appearance: appearance)
             try await render(NSHostingView(rootView: ShelfView(app: app)), size: CGSize(width: 340, height: 440), name: "shelf-hover-" + suffix, appearance: appearance, hover: true)
             try await render(NSHostingView(rootView: ShelfView(app: app)), size: CGSize(width: 300, height: 280), name: "shelf-small-" + suffix, appearance: appearance)
+            let contrastShelf = ShelfView(app: app)
+                .environment(\.colorScheme, appearance == .darkAqua ? .dark : .light)
+            let contrastAppearance: NSAppearance.Name = appearance == .darkAqua ? .accessibilityHighContrastDarkAqua : .accessibilityHighContrastAqua
+            try await render(NSHostingView(rootView: contrastShelf), size: CGSize(width: 340, height: 440), name: "shelf-contrast-" + suffix, appearance: contrastAppearance)
+            store.selectedIDs = Set(store.visibleClips.map(\.id))
+            try await render(NSHostingView(rootView: contrastShelf), size: CGSize(width: 300, height: 280), name: "shelf-selected-small-" + suffix, appearance: appearance)
+            store.selectedIDs = []
             store.openFolder(folder.id)
             try await render(NSHostingView(rootView: ShelfView(app: app)), size: CGSize(width: 340, height: 440), name: "folder-" + suffix, appearance: appearance)
             let emptyFolder = try store.createFolder(name: "Icon studies")

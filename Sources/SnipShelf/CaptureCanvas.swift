@@ -239,20 +239,24 @@ struct CaptureReviewView: View {
     var body: some View {
         VStack(spacing: 12) {
             if let image = model.reviewImage {
-                Image(nsImage: NSImage(cgImage: image, size: .zero))
-                    .resizable().scaledToFit().padding(12)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .background(Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 10))
+                ImageBackdrop(style: 0)
+                    .overlay {
+                        Image(nsImage: NSImage(cgImage: image, size: .zero))
+                            .resizable().scaledToFit().padding(12)
+                    }
+                    .clipShape(.rect(cornerRadius: 12))
+                    .accessibilityElement(children: .ignore).accessibilityHidden(false)
                     .accessibilityLabel("Selected cutout")
             }
             SubjectMaskControl(model: model)
-            HStack {
-                Button("Refine", action: refine).buttonStyle(.borderless)
-                Button("Touch Up", action: touchUp).buttonStyle(.borderless).disabled(!model.canTouchUp)
+            Divider()
+            HStack(spacing: 8) {
+                Button("Refine", action: refine).help("Adjust the selection outline")
+                Button("Touch Up", action: touchUp).disabled(!model.canTouchUp).help("Restore or erase details")
                 Spacer()
                 Button("Keep Clip") { model.confirm() }.buttonStyle(.borderedProminent)
                     .keyboardShortcut(.defaultAction).disabled(!model.canConfirm)
-            }
+            }.buttonStyle(.bordered).controlSize(.regular)
         }.padding(14).background(.regularMaterial)
     }
 }
@@ -261,11 +265,13 @@ struct SubjectMaskControl: View {
     @Bindable var model: CanvasModel
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Toggle("Subject mask", isOn: $model.subjectMaskEnabled)
-                .toggleStyle(.checkbox).help("Remove background around the subject inside your selection. Turn off to restore your original cutout.")
+            Toggle("Remove Background", isOn: $model.subjectMaskEnabled)
+                .toggleStyle(.switch).controlSize(.small)
+                .help("Remove background around the subject inside your selection. Turn off to restore your original cutout.")
             HStack(spacing: 6) {
                 if model.subjectMaskEnabled && model.correcting { ProgressView().controlSize(.mini) }
-                Text(model.correctionStatus).font(.caption).foregroundStyle(.secondary)
+                Text(model.correctionStatus).font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                    .help(model.correctionStatus)
             }
         }.frame(maxWidth: .infinity, alignment: .leading).disabled(model.paintingMask)
     }
@@ -275,7 +281,7 @@ struct SelectionReviewTools: View {
     @Bindable var model: CanvasModel
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
-            Text("Selection preview").font(.headline)
+            Text("Refine Your Clip").font(.title3).bold()
             SubjectMaskControl(model: model)
             if let image = model.reviewImage {
                 Image(nsImage: NSImage(cgImage: image, size: .zero))
@@ -294,8 +300,9 @@ struct SelectionReviewTools: View {
                         .font(.caption).foregroundStyle(.secondary)
                 }.disabled(!model.canTouchUp || model.paintingMask)
             }
+            Divider()
             VStack(alignment: .leading, spacing: 8) {
-                Text("Manual touch-up").font(.headline)
+                Text("Touch Up").font(.headline)
                 Picker("Touch-up tool", selection: $model.maskTool) {
                     ForEach(CanvasModel.MaskTool.allCases, id: \.self) { Text($0.rawValue).tag($0) }
                 }.pickerStyle(.segmented).labelsHidden()
@@ -311,11 +318,11 @@ struct SelectionReviewTools: View {
                 }
                 Text(model.subjectMaskEnabled
                     ? "Restore brings back original pixels inside your lasso. Erase removes unwanted areas."
-                    : "Turn on Subject mask to touch up the result.")
+                    : "Turn on Remove Background to touch up the result.")
                     .font(.caption).foregroundStyle(.secondary)
             }.disabled(!model.canTouchUp || model.paintingMask)
             if let image = model.reviewImage {
-                Text("\(image.width) × \(image.height) px · \(model.reviewPoints.count) points")
+                Text("\(image.width) × \(image.height) px")
                     .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
             }
         }
