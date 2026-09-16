@@ -82,7 +82,8 @@ final class InteractionTests: XCTestCase {
             let editor = try XCTUnwrap(NSApp.windows.first { $0.title == "Crop a Copy" && $0.isVisible })
             XCTAssertFalse(editor.hidesOnDeactivate, "An unfinished selection must stay reachable when focus changes")
             try await Task.sleep(for: .milliseconds(80))
-            let canvas = try XCTUnwrap(descendants(XCTUnwrap(editor.contentView)).compactMap { $0 as? CanvasNSView }.first)
+            var canvas = try XCTUnwrap(descendants(XCTUnwrap(editor.contentView)).compactMap { $0 as? CanvasNSView }.first)
+            let sourceCanvas = canvas
             model.scale = 1.2; model.offset = CGPoint(x: 12, y: -18)
             model.smoothing = 0; model.snapEnabled = false; model.subjectMaskEnabled = false
             let stroke = [CGPoint(x: 250, y: 200), CGPoint(x: 650, y: 200), CGPoint(x: 600, y: 320), CGPoint(x: 260, y: 300)]
@@ -91,7 +92,7 @@ final class InteractionTests: XCTestCase {
                 let location = canvas.convert(CGPoint(x: rect.minX + pixel.x * rect.width / 900,
                                                      y: rect.minY + pixel.y * rect.height / 600), to: nil)
                 return NSEvent.mouseEvent(with: type, location: location, modifierFlags: [], timestamp: 0,
-                                         windowNumber: editor.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1)!
+                                         windowNumber: canvas.window!.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1)!
             }
             canvas.mouseDown(with: mouse(.leftMouseDown, stroke[0]))
             for point in stroke.dropFirst() { canvas.mouseDragged(with: mouse(.leftMouseDragged, point)) }
@@ -99,19 +100,21 @@ final class InteractionTests: XCTestCase {
             let outline = canvas.points
             XCTAssertGreaterThan(outline.count, 2)
             let bytes = try ImageCore.png(XCTUnwrap(model.reviewImage))
-            var panel = try XCTUnwrap(NSApp.windows.first { $0.title == "Capture Preview" && $0.isVisible })
+            let panel = try XCTUnwrap(NSApp.windows.first { $0.title == "Capture Preview" && $0.isVisible })
             XCTAssertFalse(editor.isVisible)
             XCTAssertEqual(panel.level, .floating)
             XCTAssertFalse(panel.hidesOnDeactivate, "The review must remain visible alongside the desktop")
-            XCTAssertLessThanOrEqual(panel.frame.width, 340)
-            XCTAssertLessThan(panel.frame.height, 400)
+            XCTAssertLessThanOrEqual(panel.frame.width, 440)
+            XCTAssertLessThan(panel.frame.height, 600)
+            XCTAssertTrue(panel.styleMask.contains(.resizable))
+            XCTAssertFalse(panel.isMovableByWindowBackground, "Painting must not drag the preview window")
             XCTAssertTrue(screen.visibleFrame.contains(panel.frame))
             XCTAssertEqual(app.store.clips.count, screenCapture ? 0 : 1)
             panel.orderOut(nil)
             app.capture()
             XCTAssertTrue(panel.isVisible, "Capture must bring back the pending review instead of silently ignoring the action")
             XCTAssertTrue(app.captureModel === model)
-            app.editCapture(refineOutline: true)
+            app.refineCapture()
             canvas.refresh()
             XCTAssertTrue(editor.isVisible)
             XCTAssertFalse(panel.isVisible)
@@ -123,22 +126,38 @@ final class InteractionTests: XCTestCase {
             XCTAssertTrue(editor.isVisible, "Refining must bring back the source editor, not the hidden review")
             model.undoSelection()
             XCTAssertEqual(try ImageCore.png(XCTUnwrap(model.reviewImage)), bytes)
-            panel = try XCTUnwrap(NSApp.windows.first { $0.title == "Capture Preview" && $0.isVisible })
+            XCTAssertTrue(panel === NSApp.windows.first { $0.title == "Capture Preview" && $0.isVisible })
             XCTAssertFalse(editor.isVisible)
             model.subjectMaskEnabled = true
             await model.correctionTask?.value
-            app.editCapture(refineOutline: false)
+            let reviewFrame = panel.frame
+            model.showCutout = false; model.maskTool = .restore
             try await Task.sleep(for: .milliseconds(80))
-            editor.layoutIfNeeded(); canvas.refresh()
-            XCTAssertTrue(editor.isVisible)
-            XCTAssertFalse(panel.isVisible)
-            XCTAssertTrue(model.reviewing, "Touch Up must preserve the mask instead of restarting the outline")
+            panel.layoutIfNeeded()
+            canvas = try XCTUnwrap(descendants(XCTUnwrap(panel.contentView)).compactMap { $0 as? CanvasNSView }.first)
+            canvas.refresh()
+            XCTAssertTrue(canvas.reviewOnly)
+            XCTAssertFalse(editor.isVisible, "Touch-up tools must never reopen the screen-sized source editor")
+            XCTAssertTrue(panel.isVisible)
+            XCTAssertEqual(panel.frame, reviewFrame)
+            XCTAssertTrue(model.reviewing)
             XCTAssertFalse(model.showCutout)
             XCTAssertEqual(model.maskTool, .restore)
             XCTAssertEqual(model.reviewPoints, outline)
             XCTAssertEqual(model.scale, 1.2)
             XCTAssertEqual(model.offset, CGPoint(x: 12, y: -18))
-            XCTAssertTrue(try descendants(XCTUnwrap(editor.contentView)).contains { $0 === canvas })
+            XCTAssertTrue(try descendants(XCTUnwrap(editor.contentView)).contains { $0 === sourceCanvas })
+            XCTAssertTrue(try canvas.bounds.contains(canvas.convert(panel.convertFromScreen(XCTUnwrap(canvas.reviewScreenRect)), from: nil)),
+                          "The preview must fit the selected region instead of the whole screenshot")
+            model.reviewScale = 1.4; model.reviewOffset = CGPoint(x: 14, y: -8)
+            let pointer = CGPoint(x: canvas.bounds.midX, y: canvas.bounds.midY)
+            let pixel = model.session.pixelPoint(pointer, in: canvas.imageRect)
+            canvas.zoom(by: 1.2, at: pointer)
+            let zoomedPixel = model.session.pixelPoint(pointer, in: canvas.imageRect)
+            XCTAssertEqual(pixel.x, zoomedPixel.x, accuracy: 0.001)
+            XCTAssertEqual(pixel.y, zoomedPixel.y, accuracy: 0.001)
+            XCTAssertEqual(model.scale, 1.2)
+            XCTAssertEqual(model.offset, CGPoint(x: 12, y: -18), "Preview zoom must not move the source selection")
             // Restore source pixels first so the edit check does not depend on Vision recognizing this synthetic image.
             model.brushSize = 24
             canvas.mouseDown(with: mouse(.leftMouseDown, CGPoint(x: 350, y: 240)))
@@ -146,7 +165,7 @@ final class InteractionTests: XCTestCase {
             let restored = try ImageCore.png(XCTUnwrap(model.reviewImage))
             model.maskTool = .erase
             canvas.mouseDown(with: mouse(.leftMouseDown, CGPoint(x: 350, y: 240)))
-            canvas.keyDown(with: key(36, in: editor))
+            canvas.keyDown(with: key(36, in: panel))
             XCTAssertTrue(app.captureModel === model, "Return during a stroke must not save")
             canvas.mouseDragged(with: mouse(.leftMouseDragged, CGPoint(x: 400, y: 240)))
             canvas.mouseUp(with: mouse(.leftMouseUp, CGPoint(x: 400, y: 240)))
@@ -154,7 +173,8 @@ final class InteractionTests: XCTestCase {
             XCTAssertNotEqual(edited, restored)
             model.undoSelection()
             XCTAssertEqual(try ImageCore.png(XCTUnwrap(model.reviewImage)), restored)
-            XCTAssertTrue(editor.isVisible, "Brush undo must stay in the editor")
+            XCTAssertTrue(panel.isVisible, "Brush undo must stay in the same preview")
+            XCTAssertFalse(editor.isVisible)
             model.redoMaskStroke()
             XCTAssertEqual(try ImageCore.png(XCTUnwrap(model.reviewImage)), edited)
             model.subjectMaskEnabled = false
@@ -162,17 +182,27 @@ final class InteractionTests: XCTestCase {
             model.subjectMaskEnabled = true
             XCTAssertEqual(try ImageCore.png(XCTUnwrap(model.reviewImage)), edited)
             model.maskTool = .erase
-            canvas.keyDown(with: key(53, in: editor))
+            XCTAssertTrue(panel.performKeyEquivalent(with: key(53, in: panel)))
             XCTAssertEqual(model.maskTool, .view)
             XCTAssertTrue(app.captureModel === model, "Escape leaves the brush before cancelling capture")
+            let offset = model.reviewOffset
+            canvas.mouseDown(with: mouse(.leftMouseDown, CGPoint(x: 350, y: 240)))
+            canvas.mouseDragged(with: mouse(.leftMouseDragged, CGPoint(x: 360, y: 245)))
+            canvas.mouseUp(with: mouse(.leftMouseUp, CGPoint(x: 360, y: 245)))
+            XCTAssertNotEqual(model.reviewOffset, offset, "View mode drags pan without painting")
+            XCTAssertEqual(model.offset, CGPoint(x: 12, y: -18))
+            XCTAssertEqual(try ImageCore.png(XCTUnwrap(model.reviewImage)), edited)
+            panel.setContentSize(CGSize(width: 380, height: 460))
+            let resizedFrame = panel.frame
             if screenCapture {
-                model.continueSelection(); model.undoSelection()
+                app.refineCapture(); model.undoSelection()
                 await model.correctionTask?.value
-                panel = try XCTUnwrap(NSApp.windows.first { $0.title == "Capture Preview" && $0.isVisible })
+                XCTAssertTrue(panel === NSApp.windows.first { $0.title == "Capture Preview" && $0.isVisible })
+                XCTAssertEqual(panel.frame, resizedFrame, "Refinement must retain the floating window's size and placement")
                 XCTAssertEqual(try ImageCore.png(XCTUnwrap(model.reviewImage)), edited)
                 XCTAssertTrue(panel.performKeyEquivalent(with: key(36, in: panel)))
             } else {
-                canvas.keyDown(with: key(36, in: editor))
+                canvas.keyDown(with: key(36, in: panel))
             }
             model.confirm()
             XCTAssertNil(app.captureModel)
@@ -526,7 +556,8 @@ final class InteractionTests: XCTestCase {
             try await Task.sleep(for: .milliseconds(250))
             window.layoutIfNeeded(); view.layoutSubtreeIfNeeded(); view.displayIfNeeded()
             defer { window.close() }
-            if name.hasPrefix("capture-review") {
+            if name.hasPrefix("capture-review") || name.hasPrefix("touch-up-small") {
+                XCTAssertEqual(view.bounds.width, size.width, accuracy: 1, "Controls must fit the compact preview")
                 XCTAssertEqual(view.bounds.height, size.height, accuracy: 1, "The cutout must fit the compact confirmation window")
             }
             if hover {
@@ -547,8 +578,8 @@ final class InteractionTests: XCTestCase {
                 try await render(item.view, size: CGSize(width: 144, height: 153),
                                  name: "group-card-\(hover ? "hover" : "rest")-" + suffix, appearance: appearance, hover: hover)
             }
-            try await render(NSHostingView(rootView: CaptureReviewView(model: model, refine: {}, touchUp: {})),
-                             size: CGSize(width: 340, height: 350), name: "capture-review-" + suffix, appearance: appearance)
+            try await render(NSHostingView(rootView: CaptureReviewView(model: model, refine: {})),
+                             size: CGSize(width: 440, height: 540), name: "capture-review-" + suffix, appearance: appearance)
             try await render(NSHostingView(rootView: ShelfView(app: app)), size: CGSize(width: 340, height: 440), name: "shelf-" + suffix, appearance: appearance)
             try await render(NSHostingView(rootView: ShelfView(app: app)), size: CGSize(width: 340, height: 440), name: "shelf-hover-" + suffix, appearance: appearance, hover: true)
             try await render(NSHostingView(rootView: ShelfView(app: app)), size: CGSize(width: 300, height: 280), name: "shelf-small-" + suffix, appearance: appearance)
@@ -567,10 +598,10 @@ final class InteractionTests: XCTestCase {
             store.dissolveFolder(emptyFolder.id)
             try await render(NSHostingView(rootView: SettingsView(app: app)), size: CGSize(width: 460, height: 360), name: "settings-" + suffix, appearance: appearance)
             model.showCutout = true
-            try await render(NSHostingView(rootView: CaptureView(model: model)), size: CGSize(width: 960, height: 720), name: "cutout-" + suffix, appearance: appearance)
+            try await render(NSHostingView(rootView: CaptureReviewView(model: model, refine: {})), size: CGSize(width: 440, height: 540), name: "cutout-" + suffix, appearance: appearance)
             model.showCutout = false
-            try await render(NSHostingView(rootView: CaptureView(model: model)), size: CGSize(width: 960, height: 720), name: "original-" + suffix, appearance: appearance)
-            try await render(NSHostingView(rootView: CaptureView(model: model)), size: CGSize(width: 640, height: 420), name: "touch-up-small-" + suffix, appearance: appearance)
+            try await render(NSHostingView(rootView: CaptureReviewView(model: model, refine: {})), size: CGSize(width: 440, height: 540), name: "original-" + suffix, appearance: appearance)
+            try await render(NSHostingView(rootView: CaptureReviewView(model: model, refine: {})), size: CGSize(width: 360, height: 440), name: "touch-up-small-" + suffix, appearance: appearance)
             for edge in ["left", "right"] {
                 app.shelf.snapEdge = edge
                 try await render(NSHostingView(rootView: ShelfView(app: app).background(Color(nsColor: .windowBackgroundColor))),

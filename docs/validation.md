@@ -33,7 +33,7 @@ The suite contains **58 behavioral tests** plus optional interface-rendering and
 | Drag import | Internal drags are rejected without writes; independent external PNG drops still import. |
 | Multiple references | Group windows and individual image pins coexist, reuse an existing window for the same target, and keep selection separate from the Shelf. Native checks cover per-window frame restoration, hide/show, pin buttons, keyboard routing, live membership and rename updates, internal drops into populated/empty group windows without duplicate PNGs, and closing stale references after deletion/dissolution. Light/dark renders at compact sizes are available through `SNIPSHELF_RENDER_QA` in the reference-window test. |
 | Menu icon | Template rendering at 1× and 2×, transparent padding, opaque sticker, and a transparent peeled-corner crease. |
-| Compact capture review | Actual canvas events open a small floating preview and hide the editor; Refine preserves the outline, zoom and pan; Touch Up reopens the same canvas without resetting the mask. Brush undo/redo stays in the editor, toggling the mask retains edits, refinement undo restores edited pixels, and Return saves those exact PNG bytes once; Escape and window-close cancel. Placement stays on screen for corner selections. Screen capture and recropping share this path. |
+| Compact capture review | Actual canvas events open a resizable floating preview with its own editable canvas and hide the source. The preview fits the selected bounds; zoom stays anchored under the pointer and never moves the source viewport. Restore/Erase, brush undo/redo, and View-mode panning stay in the preview. Refine preserves the source outline, zoom and pan, and returning reuses the same panel at its resized position. Toggling the mask retains edits, refinement undo restores edited pixels, and Return saves those exact PNG bytes once; Escape leaves a brush before cancelling, and window-close cancels. Placement stays on screen for corner selections. Screen capture and recropping share this path. |
 | AppKit interaction | Canvas mouse event flows, actual-size scaling, shelf move/dock state, continuous inward pulls from both edges, one-third docking thresholds at 300/450/600-point shelf widths (including retreat to cancel), preview navigation/closing, native preview Fit/100%, background-picker insets after repeated zoom resets and resizing, and clear thumbnail backgrounds. |
 
 At the default 55% steadiness, freehand tests bound filter lag to 1.8 screen points and edge correction to 1.1 screen points. The tested combined trace stays within 2.9 points of the pointer. On the alternating-jitter fixture, filtered vertical variation is below 8% of the input while deliberate fast motion follows immediately. These are synthetic behavior checks, not proof of subjective smoothness on arbitrary artwork or devices.
@@ -120,6 +120,13 @@ with the full app path. Actual screen capture encountered the macOS recording
 permission guard. Physical freehand feel and trackpad pinch remain manual checks.
 Logs, mask comparisons, and light/dark native renders are under ignored
 `.local/snip-debug/`.
+
+The September 16 follow-up combines Capture Preview and touch-up in one floating
+window. All 60 checks passed again, including the extended native interaction
+check above and light/dark rendering at 440 × 540 and 360 × 440 points. Direct
+Computer Use plugin inspection confirmed the installed app's editable floating
+preview and integrated brush controls. The active user edit was retained.
+Build/test logs and renders are under ignored `.local/unified-review/`.
 
 To repeat the optional subject-mask check with a local manifest of image paths
 and lasso points (the supplied images are not committed):

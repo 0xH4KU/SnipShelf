@@ -287,7 +287,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     private func readyForNewImage() -> Bool {
-        if let window = captureReviewWindow ?? captureWindow {
+        if let window = captureModel?.reviewing == true ? (captureReviewWindow ?? captureWindow) : captureWindow {
             NSApp.activate(ignoringOtherApps: true)
             window.makeKeyAndOrderFront(nil)
             return false
@@ -376,31 +376,38 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
     private func presentCaptureReview() {
         guard let model = captureModel, let image = model.reviewImage, let canvasWindow = captureWindow else { return }
+        if let panel = captureReviewWindow {
+            NSApp.activate(ignoringOtherApps: true)
+            panel.makeKeyAndOrderFront(nil)
+            canvasWindow.orderOut(nil)
+            return
+        }
         func canvas(in view: NSView) -> CanvasNSView? {
             if let view = view as? CanvasNSView { return view }
             return view.subviews.lazy.compactMap { canvas(in: $0) }.first
         }
         let selection = canvasWindow.contentView.flatMap { canvas(in: $0)?.reviewScreenRect } ?? canvasWindow.frame
         let visible = canvasWindow.screen?.visibleFrame ?? NSScreen.main?.visibleFrame ?? canvasWindow.frame
-        let size = CGSize(width: min(340, visible.width),
-                          height: min(visible.height - 30, max(110, min(250, 288 * CGFloat(image.height) / CGFloat(image.width))) + 126))
+        let size = CGSize(width: min(440, visible.width),
+                          height: min(visible.height - 30, max(440, min(560, 392 * CGFloat(image.height) / CGFloat(image.width) + 238))))
         let panel = ShelfPanel(contentRect: CGRect(origin: .zero, size: size),
-                               styleMask: [.titled, .closable, .utilityWindow], backing: .buffered, defer: false)
+                               styleMask: [.titled, .closable, .resizable, .utilityWindow], backing: .buffered, defer: false)
         panel.title = "Capture Preview"
         panel.isReleasedWhenClosed = false
         panel.hidesOnDeactivate = false
-        panel.isMovableByWindowBackground = true
+        panel.contentMinSize = CGSize(width: min(360, size.width), height: min(440, size.height))
         panel.level = .floating
         panel.collectionBehavior = [.fullScreenAuxiliary, .moveToActiveSpace]
         panel.delegate = self
         panel.contentView = NSHostingView(rootView: CaptureReviewView(model: model, refine: { [weak self] in
-            self?.editCapture(refineOutline: true)
-        }, touchUp: { [weak self] in self?.editCapture(refineOutline: false) }))
+            self?.refineCapture()
+        }))
         panel.onKey = { [weak model] event in
             guard event.modifierFlags.intersection([.command, .control, .option, .shift]).isEmpty else { return false }
             switch event.keyCode {
             case 36, 76: model?.confirm()
-            case 53: model?.cancel()
+            case 53:
+                if model?.editingMask == true { model?.leaveMaskEditing() } else { model?.cancel() }
             default: return false
             }
             return true
@@ -410,20 +417,15 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
         origin.x = min(max(visible.minX, origin.x), visible.maxX - panel.frame.width)
         origin.y = min(max(visible.minY, origin.y), visible.maxY - panel.frame.height)
         panel.setFrameOrigin(origin)
-        captureReviewWindow?.delegate = nil
-        captureReviewWindow?.close()
         captureReviewWindow = panel
         NSApp.activate(ignoringOtherApps: true)
         panel.makeKeyAndOrderFront(nil)
         canvasWindow.orderOut(nil)
     }
-    func editCapture(refineOutline: Bool) {
-        guard let model = captureModel, model.reviewing, !model.paintingMask,
-              refineOutline || model.canTouchUp else { return }
-        captureReviewWindow?.delegate = nil
-        captureReviewWindow?.close(); captureReviewWindow = nil
-        if refineOutline { model.continueSelection() }
-        else { model.showCutout = false; model.maskTool = .restore }
+    func refineCapture() {
+        guard let model = captureModel, model.reviewing, !model.paintingMask else { return }
+        captureReviewWindow?.orderOut(nil)
+        model.continueSelection()
         NSApp.activate(ignoringOtherApps: true)
         captureWindow?.makeKeyAndOrderFront(nil)
     }

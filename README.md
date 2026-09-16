@@ -52,19 +52,21 @@ Fluid adjusts smoothing by elapsed time and pointer speed, lands at the release
 position, and lights the start ring when releasing will close the lasso. Hold
 Option to bypass closing help. In the main app, Drawing feel is in the wand menu.
 
-The main app’s **Capture Preview → Touch Up** and Lab share the same review
-controls. **Manual touch-up** offers **Restore** and **Erase** brushes. Restore
+The main app’s resizable **Capture Preview** includes **Restore** and **Erase**
+brushes directly, using the same brush engine as Lab. Restore
 brings back original pixels inside the lasso; Erase removes unwanted areas.
 Zoom in for detail, adjust brush size in source pixels (or use `[` / `]`), and
 hold Space while dragging to pan. Command–Z undoes a whole stroke;
-Command–Shift–Z redoes it. **Done** or Escape leaves the brush without clearing
+Command–Shift–Z redoes it. **View** or Escape leaves the brush without clearing
 the selection. Switching Remove Background off and back on preserves your touch-ups.
 In **Original** view, **Show removed areas** is on by default: cyan stripes mark
 pixels removed inside your lasso, including brush edits, while kept pixels retain
 their original colors. Toggle it off for an unobstructed comparison. This guide
 never appears in Cutout or the saved PNG.
-**Refine Outline** still changes the lasso and computes a new mask; its undo
-restores the previous outline and touch-ups together.
+Only **Refine Outline** and **Redraw** return to the original selection canvas.
+Refine computes a new mask; its undo restores the previous outline and touch-ups
+together. Preview zoom and pan are independent of the source canvas, and the
+floating window retains its size and position when returning from refinement.
 
 ```sh
 ./scripts/build_and_run.sh --lab        # build once; thereafter open the existing lab
