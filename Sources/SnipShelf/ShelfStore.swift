@@ -3,7 +3,7 @@ import Observation
 
 struct Clip: Codable, Identifiable, Equatable {
     let id: UUID
-    let name: String
+    var name: String
     let createdAt: Date
     let width: Int
     let height: Int
@@ -18,11 +18,24 @@ struct ShelfFolder: Codable, Identifiable, Equatable {
 @MainActor @Observable
 final class ShelfStore {
     struct Index: Codable { let version: Int; let clips: [Clip]; var folders: [ShelfFolder]? = nil }
+    struct UndoChange {
+        let name: String
+        let clips: [Clip]
+        let folders: [ShelfFolder]
+        let folderID: UUID?
+    }
+    struct BrowsingState {
+        var selectedIDs: Set<UUID> = []
+        var selectedFolderID: UUID?
+        var scrollOrigin: CGPoint = .zero
+    }
     let root: URL
     private(set) var clips: [Clip] = []
     private(set) var folders: [ShelfFolder] = []
     private(set) var currentFolderID: UUID?
-    private(set) var undoHistory: [[Clip]] = []
+    private(set) var undoHistory: [UndoChange] = []
+    var undoTitle: String { undoHistory.last.map { "Undo \($0.name)" } ?? "Undo" }
+    @ObservationIgnored var browsingStates: [UUID?: BrowsingState] = [:]
     private(set) var isReadOnly = false
     var message: String?
     var selectedIDs: Set<UUID> = [] { didSet { selectedFolderID = nil } }
@@ -76,9 +89,15 @@ final class ShelfStore {
     var visibleClips: [Clip] { clips.filter { $0.folderID == currentFolderID } }
 
     func openFolder(_ id: UUID?) {
-        guard id == nil || folders.contains(where: { $0.id == id }) else { return }
+        guard currentFolderID != id, id == nil || folders.contains(where: { $0.id == id }) else { return }
+        browsingStates[currentFolderID, default: BrowsingState()].selectedIDs = selectedIDs
+        browsingStates[currentFolderID, default: BrowsingState()].selectedFolderID = selectedFolderID
         currentFolderID = id
-        selectedIDs = []
+        let saved = browsingStates[id] ?? BrowsingState()
+        selectedIDs = saved.selectedIDs.intersection(Set(visibleClips.map(\.id)))
+        if id == nil, let folder = saved.selectedFolderID, folders.contains(where: { $0.id == folder }) {
+            selectedFolderID = folder
+        }
     }
 
     func thumbnail(for clip: Clip) -> NSImage? {
@@ -88,11 +107,18 @@ final class ShelfStore {
         return image
     }
 
-    private func commit(_ next: [Clip], folders nextFolders: [ShelfFolder]? = nil) throws {
+    private func commit(_ next: [Clip], folders nextFolders: [ShelfFolder]? = nil, undoName: String? = nil) throws {
         guard !isReadOnly else { throw ShelfError("The shelf is read-only until its index is repaired. Your existing files are safe.") }
         let nextFolders = nextFolders ?? folders
+        guard next != clips || nextFolders != folders else { return }
         let data = try JSONEncoder().encode(Index(version: 2, clips: next, folders: nextFolders))
         try data.write(to: root.appendingPathComponent("index.json"), options: .atomic)
+        if let undoName {
+            let clipsByID = Dictionary(uniqueKeysWithValues: next.map { ($0.id, $0) })
+            undoHistory.append(UndoChange(name: undoName,
+                clips: clips.filter { clipsByID[$0.id] != $0 },
+                folders: folders, folderID: currentFolderID))
+        }
         clips = next
         folders = nextFolders
     }
@@ -108,7 +134,7 @@ final class ShelfStore {
 
     @discardableResult func createFolder(name: String, including ids: Set<UUID> = []) throws -> ShelfFolder {
         let folder = ShelfFolder(id: UUID(), name: try folderName(name))
-        try commit(moving(ids, to: folder.id), folders: folders + [folder])
+        try commit(moving(ids, to: folder.id), folders: folders + [folder], undoName: "New Group")
         selectedIDs.formIntersection(Set(visibleClips.map(\.id)))
         return folder
     }
@@ -125,7 +151,16 @@ final class ShelfStore {
         guard let index = folders.firstIndex(where: { $0.id == id }) else { return }
         var next = folders
         next[index].name = try folderName(name, excluding: id)
-        try commit(clips, folders: next)
+        try commit(clips, folders: next, undoName: "Rename Group")
+    }
+
+    func renameClip(_ id: UUID, name: String) throws {
+        guard let index = clips.firstIndex(where: { $0.id == id }) else { return }
+        let name = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else { throw ShelfError("Enter an image name.") }
+        var next = clips
+        next[index].name = name
+        try commit(next, undoName: "Rename Image")
     }
 
     @discardableResult func move(_ ids: Set<UUID>, to folderID: UUID?) -> Bool {
@@ -135,7 +170,7 @@ final class ShelfStore {
             }
             let next = moving(ids, to: folderID)
             guard next != clips else { return false }
-            try commit(next)
+            try commit(next, undoName: "Move Clips")
             selectedIDs.formIntersection(Set(visibleClips.map(\.id)))
             return true
         } catch { message = error.localizedDescription; return false }
@@ -145,7 +180,7 @@ final class ShelfStore {
         guard folders.contains(where: { $0.id == id }) else { return }
         do {
             let next = moving(Set(clips.filter { $0.folderID == id }.map(\.id)), to: nil)
-            try commit(next, folders: folders.filter { $0.id != id })
+            try commit(next, folders: folders.filter { $0.id != id }, undoName: "Dissolve Group")
             if selectedFolderID == id { selectedFolderID = nil }
             if currentFolderID == id { openFolder(nil) }
         } catch { message = error.localizedDescription }
@@ -193,33 +228,36 @@ final class ShelfStore {
         let ids = ids.intersection(Set(clips.map(\.id)))
         guard !ids.isEmpty else { return }
         do {
-            let previous = clips
-            try commit(clips.filter { !ids.contains($0.id) })
-            undoHistory.append(previous)
+            try commit(clips.filter { !ids.contains($0.id) }, undoName: "Deletion")
             selectedIDs.subtract(ids)
         } catch { message = error.localizedDescription }
     }
 
     func undo() {
-        guard let previous = undoHistory.last else { return }
+        guard let change = undoHistory.last else { return }
         do {
-            // Keep clips captured after deletion; undo only restores removed records.
-            let present = Set(clips.map(\.id))
-            let restored = previous.filter { !present.contains($0.id) }.map { clip in
+            // Restore only this edit's records; captures and imports added later stay intact.
+            let changedClips = Set(change.clips.map(\.id))
+            let nextFolders = change.folders
+            let folderIDs = Set(nextFolders.map(\.id))
+            let next = (clips.filter { !changedClips.contains($0.id) } + change.clips).map { clip in
                 var clip = clip
-                if !folders.contains(where: { $0.id == clip.folderID }) { clip.folderID = nil }
+                if let id = clip.folderID, !folderIDs.contains(id) { clip.folderID = nil }
                 return clip
             }
-            try commit((clips + restored).sorted { $0.createdAt > $1.createdAt })
-            if let first = restored.first { openFolder(first.folderID) }
-            selectedIDs = Set(restored.filter { $0.folderID == currentFolderID }.map(\.id))
+            try commit(next.sorted { $0.createdAt > $1.createdAt }, folders: nextFolders)
+            if let id = selectedFolderID, !folderIDs.contains(id) { selectedFolderID = nil }
+            if let first = change.clips.first, let restored = clips.first(where: { $0.id == first.id }) {
+                openFolder(restored.folderID)
+                selectedIDs = Set(visibleClips.filter { changedClips.contains($0.id) }.map(\.id))
+            } else { openFolder(change.folderID) }
             undoHistory.removeLast()
         } catch { message = error.localizedDescription }
     }
 
     func collectUnusedFiles() {
         guard !isReadOnly else { return }
-        let kept = Set((clips + undoHistory.flatMap { $0 }).flatMap { ["\($0.id).png", "\($0.id)-thumb.png"] })
+        let kept = Set((clips + undoHistory.flatMap(\.clips)).flatMap { ["\($0.id).png", "\($0.id)-thumb.png"] })
         guard let files = try? FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil) else { return }
         for file in files where file.pathExtension == "png" && !kept.contains(file.lastPathComponent) {
             let stem = file.deletingPathExtension().lastPathComponent.replacingOccurrences(of: "-thumb", with: "")
