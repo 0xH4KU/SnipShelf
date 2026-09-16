@@ -14,6 +14,7 @@ Draw around part of an image, review the transparent cutout, and keep it nearby 
 - Default-on native subject masks, Restore/Erase touch-up brushes, and a guide showing removed pixels.
 - Polygon selection, zoom and pan, compact cutout confirmation, refinement undo, and Redraw / Refine / Keep Clip controls.
 - A floating shelf that tucks against the screen edge, with multi-selection, a resizable image preview, clipboard support, and deletion undo.
+- Groups for related references, with one main image, two separate thumbnails, and a +N indicator for additional clips. Batch grouping, drag-to-group moves, and renaming are supported; dissolving a group keeps its clips.
 - PNG cutouts with transparency, stored locally and available to other apps through copy and drag.
 
 Requires **macOS 26+**. Local builds have been tested on Apple Silicon. The app lives in the menu bar, with **Command–Shift–2** as the default capture shortcut. Screen capture requires macOS screen-recording permission; image import and recropping do not.

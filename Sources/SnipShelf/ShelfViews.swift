@@ -76,6 +76,18 @@ struct ShelfView: View {
     private var expandedShelf: some View {
         VStack(spacing: 0) {
             header
+            if let folder = store.currentFolder {
+                HStack(spacing: 8) {
+                    Button { app.openFolder(nil) } label: { Label("Shelf", systemImage: "chevron.left") }
+                        .help("Back to Shelf (⌘[) · Drop clips here to move them out")
+                        .onDrop(of: ShelfDropDelegate.types, delegate: ShelfFolderDropDelegate(app: app, folderID: nil))
+                    Text(folder.name).fontWeight(.medium).lineLimit(1).truncationMode(.middle)
+                    Spacer(minLength: 0)
+                    Menu { ShelfFolderActions(app: app, folder: folder) } label: { Image(systemName: "ellipsis") }
+                        .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
+                        .help("Group options").accessibilityLabel("Group options")
+                }.font(.system(size: 12)).buttonStyle(.borderless).padding(.horizontal, 17).padding(.bottom, 10)
+            }
             if let pending = store.pendingImage {
                 HStack {
                     Image(systemName: "exclamationmark.triangle")
@@ -86,8 +98,14 @@ struct ShelfView: View {
                 }.font(.caption).padding(10).background(Color.orange.opacity(0.12))
                     .accessibilityValue("\(pending.width) by \(pending.height) pixels")
             }
-            if store.clips.isEmpty { emptyState }
-            else { grid }
+            if !store.visibleClips.isEmpty || (store.currentFolderID == nil && !store.folders.isEmpty) { grid }
+            else if store.currentFolderID != nil {
+                VStack(spacing: 8) {
+                    Image(systemName: "square.dashed").font(.system(size: 26, weight: .light))
+                    Text("This group is empty").fontWeight(.medium)
+                    Text("Capture, paste, or drop images here.").font(.caption)
+                }.foregroundStyle(.secondary).frame(maxWidth: .infinity, maxHeight: .infinity).padding(12)
+            } else { emptyState }
             footer
         }
     }
@@ -100,6 +118,9 @@ struct ShelfView: View {
             HStack(spacing: 10) {
                 Text("SnipShelf").font(.headline)
                 Spacer(minLength: 4)
+                Button { app.editFolder(including: store.selectedIDs) } label: { Image(systemName: "rectangle.stack.badge.plus").frame(width: 24, height: 24) }
+                    .help(store.selectedIDs.isEmpty ? "New group (⇧⌘N)" : "New group with selection (⇧⌘N)")
+                    .accessibilityLabel("New group").disabled(store.isReadOnly)
                 Button { app.capture() } label: { Image(systemName: "lasso").frame(width: 24, height: 24) }
                     .buttonStyle(.borderedProminent).help("Capture element (\(app.shortcutLabel))")
                     .accessibilityLabel("Capture element").disabled(app.busy)
@@ -130,7 +151,7 @@ struct ShelfView: View {
     private var footer: some View {
         HStack(spacing: 9) {
             if app.busy { ProgressView().controlSize(.mini) }
-            Text(app.status ?? (store.latestID != nil ? "Clip saved" : nil) ?? (store.selectedIDs.isEmpty ? "\(store.clips.count) clips" : "\(store.selectedIDs.count) selected"))
+            Text(app.status ?? (store.latestID != nil ? "Clip saved" : nil) ?? (store.selectedIDs.isEmpty ? itemCount : "\(store.selectedIDs.count) selected"))
                 .font(.system(size: 11)).foregroundStyle(.secondary).monospacedDigit()
             Spacer()
             if let clip = store.selectedClip {
@@ -138,6 +159,16 @@ struct ShelfView: View {
                     .help("Copy image (⌘C)").accessibilityLabel("Copy image")
             }
             if !store.selectedIDs.isEmpty {
+                Menu {
+                    Button("New Group with Selection…") { app.editFolder(including: store.selectedIDs) }
+                    Divider()
+                    if store.currentFolderID != nil { Button("Shelf") { store.move(store.selectedIDs, to: nil) } }
+                    ForEach(store.folders.filter { $0.id != store.currentFolderID }) { folder in
+                        Button(folder.name) { store.move(store.selectedIDs, to: folder.id) }
+                    }
+                } label: { Image(systemName: "rectangle.stack").frame(width: 18, height: 18) }
+                    .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
+                    .help("Move selected clips to a group").accessibilityLabel("Move to group")
                 Button { store.delete(store.selectedIDs) } label: { Image(systemName: "trash") }
                     .help("Delete selected clips").accessibilityLabel("Delete selected clips")
             }
@@ -156,6 +187,31 @@ struct ShelfView: View {
                 .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize().help("Shelf options").accessibilityLabel("Shelf options")
         }.buttonStyle(.borderless).padding(.horizontal, 17).padding(.vertical, 12)
     }
+    private var itemCount: String {
+        let folders = store.currentFolderID == nil && !store.folders.isEmpty ? "\(store.folders.count) groups · " : ""
+        return "\(folders)\(store.visibleClips.count) clips"
+    }
+}
+
+private struct ShelfFolderActions: View {
+    let app: AppController
+    let folder: ShelfFolder
+    var body: some View {
+        Button("Rename Group…") { app.editFolder(folder) }
+        Button("Dissolve Group — Keep Clips") { app.store.dissolveFolder(folder.id) }
+    }
+}
+
+private struct ShelfFolderDropDelegate: DropDelegate {
+    let app: AppController
+    let folderID: UUID?
+    func validateDrop(info: DropInfo) -> Bool {
+        !app.store.isReadOnly && (!app.isDraggingClips || !app.draggedClipIDs.isEmpty)
+    }
+    func dropUpdated(info: DropInfo) -> DropProposal? { DropProposal(operation: app.isDraggingClips ? .move : .copy) }
+    func performDrop(info: DropInfo) -> Bool {
+        return app.dropIntoFolder(info.itemProviders(for: ShelfDropDelegate.types), folderID: folderID)
+    }
 }
 
 struct ShelfDropDelegate: DropDelegate {
@@ -171,7 +227,7 @@ struct ShelfDropDelegate: DropDelegate {
     }
     func performDrop(info: DropInfo) -> Bool {
         app.shelf.dropTargeted = false
-        return app.acceptDrop(info.itemProviders(for: Self.types))
+        return app.acceptDrop(info.itemProviders(for: Self.types), folderID: app.store.currentFolderID)
     }
 }
 

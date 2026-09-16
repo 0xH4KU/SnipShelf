@@ -12,7 +12,7 @@ DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test
 codesign --verify --strict dist/SnipShelf.app
 ```
 
-The suite contains **45 behavioral tests** plus one optional interface-rendering check covering:
+The suite contains **51 behavioral tests** plus one optional interface-rendering check covering:
 
 | Area | Coverage |
 | --- | --- |
@@ -27,6 +27,7 @@ The suite contains **45 behavioral tests** plus one optional interface-rendering
 | Removed-area guide | Native renders verify visible cyan hatching on a red background, correct crop/zoom registration, no markings on retained pixels or outside the lasso, and immediate brush updates. Alpha-loss checks distinguish removed pixels from original transparency and soft alpha. Cutout rendering and saved PNGs stay unchanged; the guide preference survives opening another image. |
 | Image processing | Coordinate mapping, orientation, concave and self-intersecting selections, invalid input, transparency, anti-aliasing, and PNG round-trips. |
 | Local storage | New-clip selection and failed-save selection preservation, persistence, deletion/undo, batch deletion with newer clips, missing assets, failed writes, corrupt index recovery, and 100 mixed-size clips. |
+| Reference groups | Version-1 migration, atomic group/membership writes, rename validation, dissolution without image loss, pending-import destinations and deletion undo. Native grid checks cover 0/1/2/3/5/8 clips, uncropped separate previews, +N without a repeated caption count, minimum-width geometry, keyboard and click opening, selection boundaries, export index mapping, and PNG/JPEG drops into the intended group. Moving a newer reference keeps the main image and does not duplicate PNGs. |
 | Drag import | Internal drags are rejected without writes; independent external PNG drops still import. |
 | Menu icon | Template rendering at 1× and 2×, transparent padding, opaque sticker, and a transparent peeled-corner crease. |
 | Compact capture review | Actual canvas events open a small floating preview and hide the editor; Refine preserves the outline, zoom and pan; Touch Up reopens the same canvas without resetting the mask. Brush undo/redo stays in the editor, toggling the mask retains edits, refinement undo restores edited pixels, and Return saves those exact PNG bytes once; Escape and window-close cancel. Placement stays on screen for corner selections. Screen capture and recropping share this path. |
@@ -121,6 +122,22 @@ outputs are under ignored `.local/mask-touchup/`. These checks exercise editing
 and pixel preservation, not segmentation accuracy or physical pointer feel.
 The rebuilt Lab launched successfully. A fresh direct Computer Use request for
 its app state timed out, so live pointer QA remains unverified.
+
+On September 14, reference groups were integrated into the same native grid as
+loose clips, using one main image, two separate thumbnails, and +N for remaining
+clips. All 52 checks passed, including the optional light/dark shelf renders at
+340 × 440 and 300 × 280. Native event tests exercised opening groups, keyboard
+selection, internal moves, external PNG/JPEG drops and their asynchronous save
+destinations. Render evidence is under ignored `.local/group-qa/` and has the
+cached-view limitations described above. Computer Use returned
+`Trusted RPC service is not configured: sky`, so this change has no new physical
+pointer verification.
+
+The group hover follow-up passed the native enter/exit, layout, drop, and
+transparency checks. Light/dark renders under `.local/group-hover-qa/` include
+isolated cards at rest and on hover, confirming rounded outlines with clear
+interiors. The motion uses the prototype's 220 ms easing and offsets and becomes
+immediate with Reduce Motion. Live pointer verification remains unavailable.
 
 The removed-area guide was rendered on the supplied red-background artwork
 using its local source file and a reconstructed coarse lasso. The guide compares

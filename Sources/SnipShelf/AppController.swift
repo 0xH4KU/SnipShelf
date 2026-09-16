@@ -31,6 +31,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
     let defaults: UserDefaults
     var busy = false
     var isDraggingClips = false
+    var draggedClipIDs: Set<UUID> = []
     var backdrop: Int { didSet { defaults.set(backdrop, forKey: "backdrop") } }
     var shortcutLabel: String
     var previewClip: Clip? { didSet { updatePreview() } }
@@ -169,6 +170,54 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
     @objc private func selectedExport() { if let clip = store.selectedClip { export(clip) } }
     @objc private func selectedDelete() { store.delete(store.selectedIDs) }
     @objc private func selectedPreview() { previewClip = store.selectedClip }
+    @objc private func selectedNewFolder() { editFolder(including: store.selectedIDs) }
+    @objc private func selectedMove(_ sender: NSMenuItem) {
+        store.move(store.selectedIDs, to: (sender.representedObject as? String).flatMap(UUID.init(uuidString:)))
+    }
+
+    func openFolder(_ id: UUID?) {
+        previewClip = nil
+        store.openFolder(id)
+    }
+
+    func editFolder(_ folder: ShelfFolder? = nil, including ids: Set<UUID> = []) {
+        let alert = NSAlert()
+        alert.messageText = folder == nil ? "New Group" : "Rename Group"
+        alert.informativeText = folder == nil && !ids.isEmpty ? "Move \(ids.count) selected clips into this group." : "Give these references a name."
+        let field = NSTextField(string: folder?.name ?? "")
+        field.placeholderString = "Group name"
+        field.setAccessibilityLabel("Group name")
+        field.frame = CGRect(x: 0, y: 0, width: 260, height: 24)
+        alert.accessoryView = field
+        alert.addButton(withTitle: folder == nil ? "Create" : "Rename")
+        alert.addButton(withTitle: "Cancel")
+        alert.window.initialFirstResponder = field
+        NSApp.activate(ignoringOtherApps: true)
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        do {
+            if let folder { try store.renameFolder(folder.id, name: field.stringValue) }
+            else { openFolder(try store.createFolder(name: field.stringValue, including: ids).id) }
+        } catch { store.message = error.localizedDescription }
+    }
+
+    func folderMenu(_ folder: ShelfFolder) -> NSMenu {
+        let menu = NSMenu()
+        menu.autoenablesItems = false
+        for (title, action) in [("Rename Group…", #selector(renameFolderAction(_:))),
+                                ("Dissolve Group — Keep Clips", #selector(dissolveFolderAction(_:)))] {
+            let item = actionItem(title, action: action)
+            item.representedObject = folder
+            item.isEnabled = !store.isReadOnly
+            menu.addItem(item)
+        }
+        return menu
+    }
+    @objc private func renameFolderAction(_ sender: NSMenuItem) {
+        if let folder = sender.representedObject as? ShelfFolder { editFolder(folder) }
+    }
+    @objc private func dissolveFolderAction(_ sender: NSMenuItem) {
+        if let folder = sender.representedObject as? ShelfFolder { store.dissolveFolder(folder.id) }
+    }
 
     func clipMenu(_ clip: Clip) -> NSMenu {
         if !store.selectedIDs.contains(clip.id) { store.selection = clip.id }
@@ -180,6 +229,17 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
         menu.addItem(actionItem("Crop a Copy…", action: #selector(selectedCrop)))
         menu.addItem(.separator())
         }
+        menu.addItem(actionItem("New Group with Selection…", action: #selector(selectedNewFolder)))
+        let move = NSMenuItem(title: "Move to", action: nil, keyEquivalent: "")
+        let destinations = NSMenu()
+        if store.currentFolderID != nil { destinations.addItem(actionItem("Shelf", action: #selector(selectedMove(_:)))) }
+        for folder in store.folders where folder.id != store.currentFolderID {
+            let item = actionItem(folder.name, action: #selector(selectedMove(_:)))
+            item.representedObject = folder.id.uuidString
+            destinations.addItem(item)
+        }
+        if !destinations.items.isEmpty { move.submenu = destinations; menu.addItem(move) }
+        menu.addItem(.separator())
         menu.addItem(actionItem(store.selectedIDs.count > 1 ? "Delete \(store.selectedIDs.count) Clips" : "Delete", action: #selector(selectedDelete)))
         return menu
     }
@@ -241,10 +301,11 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
         } catch { store.message = error.localizedDescription }
     }
     func presentCanvas(image: CGImage, frame: CGRect, screenCapture: Bool, name: String) {
+        let folderID = store.currentFolderID
         let model = CanvasModel(image: image, isScreen: screenCapture, preferences: defaults, complete: { [weak self] output in
             guard let self else { return }
             self.dismissCanvas()
-            self.store.receive(output, name: name)
+            self.store.receive(output, name: name, folderID: folderID)
         }, cancel: { [weak self] in self?.dismissCanvas() })
         let style: NSWindow.StyleMask = screenCapture ? [.borderless] : [.titled, .resizable]
         let window = ShelfPanel(contentRect: frame, styleMask: style, backing: .buffered, defer: false)
@@ -330,6 +391,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
     func importURLs(_ urls: [URL]) {
         guard readyForNewImage() else { return }
+        let folderID = store.currentFolderID
         busy = true
         Task {
             defer { busy = false }
@@ -341,13 +403,19 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 do {
                     guard url.isFileURL else { throw ShelfError("Only local image files can be imported.") }
                     let image = try await Task.detached(priority: .userInitiated) { try ImageCore.load(url) }.value
-                    store.receive(image, name: url.deletingPathExtension().lastPathComponent)
+                    store.receive(image, name: url.deletingPathExtension().lastPathComponent, folderID: folderID)
                 } catch { failures.append("\(url.lastPathComponent): \(error.localizedDescription)") }
             }
             if !failures.isEmpty { store.message = failures.prefix(5).joined(separator: "\n") }
         }
     }
-    func acceptDrop(_ providers: [NSItemProvider]) -> Bool {
+    func dropIntoFolder(_ providers: [NSItemProvider], folderID: UUID?) -> Bool {
+        shelf.dropTargeted = false
+        shelf.dropFinished()
+        if isDraggingClips { return store.move(draggedClipIDs, to: folderID) }
+        return acceptDrop(providers, folderID: folderID)
+    }
+    func acceptDrop(_ providers: [NSItemProvider], folderID: UUID? = nil) -> Bool {
         guard !isDraggingClips, readyForNewImage() else { return false }
         shelf.dropFinished()
         busy = true
@@ -360,14 +428,14 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
                         let data = try await provider.data(for: UTType.fileURL.identifier)
                         guard let url = URL(dataRepresentation: data, relativeTo: nil), url.isFileURL else { throw ShelfError("Drop a local image file.") }
                         let image = try await Task.detached { try ImageCore.load(url) }.value
-                        store.receive(image, name: url.deletingPathExtension().lastPathComponent)
+                        store.receive(image, name: url.deletingPathExtension().lastPathComponent, folderID: folderID)
                     } else {
                         let type = [UTType.png.identifier, UTType.tiff.identifier, UTType.image.identifier].first { provider.hasItemConformingToTypeIdentifier($0) }
                         guard let type else { continue }
                         let data = try await provider.data(for: type)
                         let image = try await Task.detached { try ImageCore.load(data) }.value
                         let name = provider.suggestedName.map { ($0 as NSString).deletingPathExtension } ?? "Dropped image"
-                        store.receive(image, name: name)
+                        store.receive(image, name: name, folderID: folderID)
                     }
                 } catch { store.message = error.localizedDescription }
             }
@@ -378,7 +446,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
         guard readyForNewImage() else { return }
         let board = NSPasteboard.general
         if let data = board.data(forType: .png) ?? board.data(forType: .tiff) {
-            do { store.receive(try ImageCore.load(data), name: "Pasted image") }
+            do { store.receive(try ImageCore.load(data), name: "Pasted image", folderID: store.currentFolderID) }
             catch { store.message = error.localizedDescription }
         } else if let urls = board.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL], !urls.isEmpty {
             importURLs(urls)
@@ -431,22 +499,34 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
             case "v": paste()
             case "c": if let clip = store.selectedClip { copy(clip) }
             case "z": store.undo()
-            case "a": store.selectedIDs = Set(store.clips.map(\.id))
+            case "a": store.selectedIDs = Set(store.visibleClips.map(\.id))
             case "o": chooseImages()
+            case "n" where event.modifierFlags.contains(.shift): editFolder(including: store.selectedIDs)
+            case "[": openFolder(nil)
             default: return false
             }
             return true
         }
         switch event.keyCode {
-        case 49: previewClip = store.selectedClip
+        case 49:
+            if let id = store.selectedFolderID { openFolder(id) }
+            else { previewClip = store.selectedClip }
+        case 36:
+            guard let id = store.selectedFolderID else { return false }
+            openFolder(id)
         case 51, 117: store.delete(store.selectedIDs)
-        case 53: if previewClip != nil { previewClip = nil } else if !store.selectedIDs.isEmpty { store.selectedIDs = [] } else { shelf.collapse() }
+        case 53:
+            if previewClip != nil { previewClip = nil }
+            else if !store.selectedIDs.isEmpty || store.selectedFolderID != nil { store.selectedIDs = [] }
+            else if store.currentFolderID != nil { openFolder(nil) }
+            else { shelf.collapse() }
         case 123, 124, 125, 126:
             if event.modifierFlags.contains(.shift) { return false }
-            guard !store.clips.isEmpty else { return true }
-            let current = store.clips.firstIndex { $0.id == store.selection } ?? 0
+            let ids = (store.currentFolderID == nil ? store.folders.map(\.id) : []) + store.visibleClips.map(\.id)
+            guard !ids.isEmpty else { return true }
+            let current = ids.firstIndex { $0 == store.selection }
             let delta = event.keyCode == 123 ? -1 : event.keyCode == 124 ? 1 : event.keyCode == 125 ? 2 : -2
-            store.selection = store.clips[min(store.clips.count - 1, max(0, current + delta))].id
+            store.selection = ids[min(ids.count - 1, max(0, current.map { $0 + delta } ?? 0))]
         default: return false
         }
         return true
@@ -454,6 +534,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     private func updatePreview() {
         guard let clip = previewClip else { previewWindow?.orderOut(nil); return }
+        if store.currentFolderID != clip.folderID { store.openFolder(clip.folderID) }
         store.selection = clip.id
         if previewWindow == nil {
             let window = ShelfPanel(contentRect: CGRect(x: 0, y: 0, width: 720, height: 580),
@@ -471,10 +552,15 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
         NSApp.activate(ignoringOtherApps: true)
         previewWindow?.makeKeyAndOrderFront(nil)
     }
+    var previewClips: [Clip] {
+        guard let clip = store.clips.first(where: { $0.id == previewClip?.id }) else { return [] }
+        return store.clips.filter { $0.folderID == clip.folderID }
+    }
     func adjacentPreview(_ delta: Int) -> Clip? {
-        guard let clip = previewClip, let index = store.clips.firstIndex(where: { $0.id == clip.id }),
-              store.clips.indices.contains(index + delta) else { return nil }
-        return store.clips[index + delta]
+        guard let clip = previewClip else { return nil }
+        let clips = previewClips
+        guard let index = clips.firstIndex(where: { $0.id == clip.id }), clips.indices.contains(index + delta) else { return nil }
+        return clips[index + delta]
     }
     func movePreview(_ delta: Int) {
         if let clip = adjacentPreview(delta) { previewClip = clip }

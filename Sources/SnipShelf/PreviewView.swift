@@ -26,8 +26,8 @@ private struct PreviewContent: View {
                     Button { app.movePreview(1) } label: { Image(systemName: "chevron.right") }
                         .disabled(app.adjacentPreview(1) == nil).help("Next clip (→)").accessibilityLabel("Next clip")
                 }
-                if let index = app.store.clips.firstIndex(where: { $0.id == clip.id }) {
-                    Text("\(index + 1) of \(app.store.clips.count)").font(.callout).foregroundStyle(.secondary).monospacedDigit()
+                if let index = app.previewClips.firstIndex(where: { $0.id == clip.id }) {
+                    Text("\(index + 1) of \(app.previewClips.count)").font(.callout).foregroundStyle(.secondary).monospacedDigit()
                 }
                 Spacer()
                 Text(app.status ?? "\(clip.width) × \(clip.height)")

@@ -188,17 +188,35 @@ final class InteractionTests: XCTestCase {
         let source = try ImageCore.context(width: 40, height: 40)
         source.setFillColor(CGColor(srgbRed: 1, green: 0.3, blue: 0.1, alpha: 1))
         source.fill(CGRect(x: 10, y: 10, width: 20, height: 20))
-        let card = ShelfCollection.CardView(frame: CGRect(x: 0, y: 0, width: 160, height: 153))
-        card.picture.image = NSImage(cgImage: try XCTUnwrap(source.makeImage()), size: NSSize(width: 40, height: 40))
-        card.layout()
-        let bitmap = try XCTUnwrap(card.bitmapImageRepForCachingDisplay(in: card.bounds))
-        card.cacheDisplay(in: card.bounds, to: bitmap)
-        func alpha(_ x: CGFloat, _ y: CGFloat) -> CGFloat {
-            bitmap.colorAt(x: Int(x * CGFloat(bitmap.pixelsWide) / card.bounds.width),
-                           y: Int(y * CGFloat(bitmap.pixelsHigh) / card.bounds.height))!.alphaComponent
+        let image = NSImage(cgImage: try XCTUnwrap(source.makeImage()), size: NSSize(width: 40, height: 40))
+        for appearance in [NSAppearance.Name.aqua, .darkAqua] {
+            for grouped in [false, true] {
+                let card = ShelfCollection.CardView(frame: CGRect(x: 0, y: 0, width: 160, height: 153))
+                card.appearance = NSAppearance(named: appearance)
+                card.folderID = grouped ? UUID() : nil
+                card.picture.image = image
+                card.related.forEach { $0.image = image; $0.isHidden = !grouped }
+                card.layout()
+                let bitmap = try XCTUnwrap(card.bitmapImageRepForCachingDisplay(in: card.bounds))
+                card.cacheDisplay(in: card.bounds, to: bitmap)
+                func alpha(_ x: CGFloat, _ y: CGFloat) -> CGFloat {
+                    bitmap.colorAt(x: Int(x * CGFloat(bitmap.pixelsWide) / card.bounds.width),
+                                   y: Int(y * CGFloat(bitmap.pixelsHigh) / card.bounds.height))!.alphaComponent
+                }
+                XCTAssertLessThan(alpha(8, 8), 0.01)
+                for thumbnail in [card.picture] + card.related.filter({ !$0.isHidden }) {
+                    let frame = thumbnail.convert(thumbnail.bounds, to: card)
+                    XCTAssertLessThan(alpha(frame.minX + 2, frame.minY + 2), 0.01,
+                                      "Every thumbnail must keep transparent pixels clear in \(appearance)")
+                    XCTAssertGreaterThan(alpha(frame.midX, frame.midY), 0.99,
+                                         "The subject must still render")
+                }
+                for frame in card.relatedFrames where !frame.isHidden {
+                    XCTAssertGreaterThan(alpha(frame.frame.minX + 0.5, frame.frame.midY), 0.03,
+                                         "The thumbnail outline must remain visible without an opaque fill")
+                }
+            }
         }
-        XCTAssertLessThan(alpha(8, 8), 0.01, "The thumbnail well must not paint a checkerboard or solid background")
-        XCTAssertGreaterThan(alpha(80, 63), 0.99, "The subject must still render")
     }
 
     @MainActor func testPreviewBackgroundPickerStaysInsetAfterFitAndResize() async throws {
@@ -415,13 +433,24 @@ final class InteractionTests: XCTestCase {
         for name in ["Botanical study", "Shape & color", "Leaf detail", "Studio reference"] {
             try store.add(artwork, name: name)
         }
+        let folder = try store.createFolder(name: "Shape references", including: Set(store.clips.prefix(3).map(\.id)))
+        for (name, count) in [("Color studies", 5), ("Reference elements with a longer name", 8)] {
+            let group = try store.createFolder(name: name)
+            for index in 1...count { try store.add(artwork, name: "Study \(index)", folderID: group.id) }
+        }
+        store.latestID = nil; store.selection = nil
         let model = CanvasModel(image: artwork, isScreen: false, complete: { _ in }, cancel: {})
         try model.prepareReview(points: [CGPoint(x: 120, y: 90), CGPoint(x: 680, y: 90), CGPoint(x: 590, y: 530), CGPoint(x: 200, y: 470)])
         await model.correctionTask?.value
         model.maskTool = .restore
         let directory = URL(fileURLWithPath: destination, isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        func render(_ view: NSView, size: CGSize, name: String, appearance: NSAppearance.Name) async throws {
+        let storage = directory.appendingPathComponent("storage", isDirectory: true)
+        try FileManager.default.createDirectory(at: storage, withIntermediateDirectories: true)
+        for file in try FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil) {
+            try Data(contentsOf: file).write(to: storage.appendingPathComponent(file.lastPathComponent), options: .atomic)
+        }
+        func render(_ view: NSView, size: CGSize, name: String, appearance: NSAppearance.Name, hover: Bool = false) async throws {
             let window = NSWindow(contentRect: CGRect(origin: .zero, size: size), styleMask: .borderless, backing: .buffered, defer: false)
             window.isReleasedWhenClosed = false; window.appearance = NSAppearance(named: appearance)
             window.contentView = view; view.frame = CGRect(origin: .zero, size: size)
@@ -429,14 +458,35 @@ final class InteractionTests: XCTestCase {
             try await Task.sleep(for: .milliseconds(250))
             window.layoutIfNeeded(); view.layoutSubtreeIfNeeded(); view.displayIfNeeded()
             defer { window.close() }
+            if hover {
+                func descendants(_ view: NSView) -> [NSView] { [view] + view.subviews.flatMap(descendants) }
+                let card = try XCTUnwrap(descendants(view).compactMap { $0 as? ShelfCollection.CardView }.first { $0.folderID != nil })
+                card.setHovered(true)
+                try await Task.sleep(for: .milliseconds(250))
+                view.displayIfNeeded()
+            }
             let bitmap = try XCTUnwrap(view.bitmapImageRepForCachingDisplay(in: view.bounds))
             view.cacheDisplay(in: view.bounds, to: bitmap)
             try XCTUnwrap(bitmap.representation(using: .png, properties: [:])).write(to: directory.appendingPathComponent(name + ".png"))
         }
         for (appearance, suffix): (NSAppearance.Name, String) in [(.aqua, "light"), (.darkAqua, "dark")] {
+            for hover in [false, true] {
+                let item = ShelfCollection.Item()
+                item.configure(app: app, entry: .group(folder, store.clips.reversed().filter { $0.folderID == folder.id }))
+                try await render(item.view, size: CGSize(width: 144, height: 153),
+                                 name: "group-card-\(hover ? "hover" : "rest")-" + suffix, appearance: appearance, hover: hover)
+            }
             try await render(NSHostingView(rootView: CaptureReviewView(model: model, refine: {}, touchUp: {})),
                              size: CGSize(width: 340, height: 350), name: "capture-review-" + suffix, appearance: appearance)
             try await render(NSHostingView(rootView: ShelfView(app: app)), size: CGSize(width: 340, height: 440), name: "shelf-" + suffix, appearance: appearance)
+            try await render(NSHostingView(rootView: ShelfView(app: app)), size: CGSize(width: 340, height: 440), name: "shelf-hover-" + suffix, appearance: appearance, hover: true)
+            try await render(NSHostingView(rootView: ShelfView(app: app)), size: CGSize(width: 300, height: 280), name: "shelf-small-" + suffix, appearance: appearance)
+            store.openFolder(folder.id)
+            try await render(NSHostingView(rootView: ShelfView(app: app)), size: CGSize(width: 340, height: 440), name: "folder-" + suffix, appearance: appearance)
+            let emptyFolder = try store.createFolder(name: "Icon studies")
+            store.openFolder(emptyFolder.id)
+            try await render(NSHostingView(rootView: ShelfView(app: app)), size: CGSize(width: 300, height: 280), name: "folder-empty-small-" + suffix, appearance: appearance)
+            store.dissolveFolder(emptyFolder.id)
             try await render(NSHostingView(rootView: SettingsView(app: app)), size: CGSize(width: 460, height: 360), name: "settings-" + suffix, appearance: appearance)
             model.showCutout = true
             try await render(NSHostingView(rootView: CaptureView(model: model)), size: CGSize(width: 960, height: 720), name: "cutout-" + suffix, appearance: appearance)
