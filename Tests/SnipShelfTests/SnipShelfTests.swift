@@ -179,8 +179,9 @@ final class SnipShelfTests: XCTestCase {
         XCTAssertFalse(shelf.collapsed)
         XCTAssertEqual(shelf.panel.frame.minX, initial.minX - 100, accuracy: 1)
         let secondStart = CGPoint(x: shelf.panel.frame.midX, y: shelf.panel.frame.midY)
+        let dockDistance = shelf.screen.visibleFrame.maxX - shelf.panel.frame.maxX + shelf.panel.frame.width / 3 + 1
         shelf.beginMove(at: secondStart)
-        shelf.move(to: CGPoint(x: secondStart.x + 130, y: secondStart.y))
+        shelf.move(to: CGPoint(x: secondStart.x + dockDistance, y: secondStart.y))
         XCTAssertEqual(shelf.snapEdge, "right")
         shelf.endMove(wasClick: false)
         XCTAssertTrue(shelf.collapsed)

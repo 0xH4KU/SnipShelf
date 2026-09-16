@@ -390,19 +390,25 @@ final class InteractionTests: XCTestCase {
             shelf.endMove(wasClick: false)
             XCTAssertFalse(shelf.collapsed)
             XCTAssertFalse(preferences.bool(forKey: "shelfCollapsed"))
-            let expanded = shelf.panel.frame
-            let handle = CGPoint(x: expanded.midX, y: expanded.maxY - 14)
-            let visible = shelf.screen.visibleFrame
-            let dx = edge == "left" ? visible.minX + 12 - expanded.minX : visible.maxX - 12 - expanded.maxX
-            shelf.beginMove(at: handle)
-            shelf.move(to: CGPoint(x: handle.x + dx, y: handle.y))
-            XCTAssertEqual(shelf.snapEdge, edge)
-            XCTAssertFalse(shelf.collapsed, "The glass arrow is only a preview until release")
-            XCTAssertEqual(shelf.panel.frame.size, expanded.size)
-            shelf.move(to: handle)
-            XCTAssertNil(shelf.snapEdge, "Pulling away restores the shelf before release")
-            shelf.endMove(wasClick: false)
-            XCTAssertFalse(shelf.collapsed)
+            for width: CGFloat in [300, 450, 600] {
+                shelf.panel.setContentSize(CGSize(width: width, height: 440))
+                shelf.recoverScreen()
+                let expanded = shelf.panel.frame
+                let handle = CGPoint(x: expanded.midX, y: expanded.maxY - 14)
+                let visible = shelf.screen.visibleFrame
+                shelf.beginMove(at: handle)
+                for (overflow, shouldDock): (CGFloat, Bool) in [(-12, false), (0, false), (width / 3 - 1, false),
+                                                               (width / 3, true), (width / 3 + 12, true), (width / 3 - 1, false)] {
+                    let dx = edge == "left" ? visible.minX - overflow - expanded.minX : visible.maxX + overflow - expanded.maxX
+                    shelf.move(to: CGPoint(x: handle.x + dx, y: handle.y))
+                    XCTAssertEqual(shelf.snapEdge, shouldDock ? edge : nil, "\(edge), width \(width), overflow \(overflow)")
+                    XCTAssertFalse(shelf.collapsed, "The glass arrow is only a preview until release")
+                    XCTAssertEqual(shelf.panel.frame.size, expanded.size)
+                }
+                shelf.endMove(wasClick: false)
+                XCTAssertFalse(shelf.collapsed, "Retreating below one third must cancel docking")
+                XCTAssertTrue(visible.contains(shelf.panel.frame))
+            }
         }
     }
 

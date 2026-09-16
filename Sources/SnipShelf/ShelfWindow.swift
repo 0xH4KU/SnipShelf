@@ -32,7 +32,6 @@ final class ShelfWindow: NSObject, NSWindowDelegate {
     private var dragStart = CGPoint.zero
     private var frameStart = CGRect.zero
     private var moving = false
-    private var pullingFromEdge = false
     private let defaults: UserDefaults
     init(defaults: UserDefaults = .standard) { self.defaults = defaults; super.init() }
 
@@ -123,7 +122,6 @@ final class ShelfWindow: NSObject, NSWindowDelegate {
         if !collapsed && !wasAnimating { expandedSize = panel.frame.size }
         if !collapsed && wasAnimating { panel.setFrame(CGRect(origin: panel.frame.origin, size: expandedSize), display: true); applySizing() }
         moving = true
-        pullingFromEdge = false
         snapEdge = nil
         temporarilyExpanded = false
         dragStart = point; frameStart = panel.frame
@@ -133,7 +131,7 @@ final class ShelfWindow: NSObject, NSWindowDelegate {
         if collapsed {
             let inward = edge == "left" ? dx > 16 : dx < -16
             if inward {
-                collapsed = false; pullingFromEdge = true
+                collapsed = false
                 let x = edge == "left" ? frameStart.minX + dx : frameStart.maxX + dx - expandedSize.width
                 let frame = CGRect(x: x, y: p.y - expandedSize.height + 14,
                                    width: expandedSize.width, height: expandedSize.height)
@@ -146,13 +144,9 @@ final class ShelfWindow: NSObject, NSWindowDelegate {
         } else if moving {
             panel.setFrameOrigin(CGPoint(x: frameStart.minX + dx, y: frameStart.minY + dy))
             let visible = screen.visibleFrame
-            snapEdge = panel.frame.minX <= visible.minX + 30 ? "left" :
-                (panel.frame.maxX >= visible.maxX - 30 ? "right" : nil)
-            if pullingFromEdge {
-                let inset = edge == "left" ? panel.frame.minX - visible.minX : visible.maxX - panel.frame.maxX
-                if inset > 0 && snapEdge == edge { snapEdge = nil }
-                else { pullingFromEdge = false }
-            }
+            let threshold = panel.frame.width / 3
+            snapEdge = panel.frame.minX <= visible.minX - threshold ? "left" :
+                (panel.frame.maxX >= visible.maxX + threshold ? "right" : nil)
         }
     }
     func endMove(wasClick: Bool) {
