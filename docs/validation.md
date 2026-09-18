@@ -1,6 +1,142 @@
 # Validation
 
-Last automated check: 2026-09-16. Host: Apple Silicon, macOS 27.0 (26A428). Builds use the locally installed Xcode and macOS SDK. Deployment target: macOS 26. Local app bundles are ad-hoc signed, not notarized. Manual evidence is dated below.
+Last automated check: 2026-09-18. Host: Apple Silicon, macOS 27.0 (26A428). Builds use the locally installed Xcode and macOS SDK. Deployment target: macOS 26. Local app bundles are ad-hoc signed, not notarized. Manual evidence is dated below.
+
+The complete current suite passes all 76 tests. The separate library, capture,
+and Palette Lab commit snapshots also compile and pass their focused checks.
+Both build scripts pass shell syntax checks. Logs for this verification are
+under `.local/commit-sequence/`, including `04-integration.log` for the full suite.
+
+## September 18 preview palettes and compact layout
+
+Preview now shares the pin's color strip, Analysis Settings popover, and bottom
+controls. New previews use the pin's 340-point width and aspect-based height,
+plus a compact navigation row. Seven focused tests pass, including equal image
+space and Fit magnification in Preview and Pin, controls at 280/340/560-point
+widths, resizing/reopening, palette changes and cancellation, shared saved
+defaults, and the existing pin zoom/pan/export behavior. Logs and light/dark
+renders are under `.local/compact-preview/`.
+
+The preview palette integration also preserves original PNG copying and
+dismisses Analysis Settings before closing the preview on Escape. Direct
+Computer Use on the initial integrated build verified the supplied artwork's
+subject color strip, copying `#63BAC9`, and opening its saved analysis settings.
+After the compact-layout rebuild, direct Computer Use opened that artwork in
+both Preview and Pin and verified matching image size, color strips, and bottom
+controls. The signature-verified main app is running the updated layout.
+
+## September 18 preview sizing
+
+The regression reproduced a 449 × 144-point preview window with only 16 points
+of image height. The preview's hosting view now leaves window sizing to AppKit,
+so loading or clearing the image cannot replace the panel's size constraints.
+Four focused preview tests pass, covering initial layout, image switching,
+closing and reopening after 100% zoom, preserving a resized window, Fit, and
+the background toolbar. The before/after logs are in `.local/preview-sizing/`.
+
+The main app was rebuilt, signature-verified, and relaunched. Direct Computer
+Use reproduced the collapsed window before the fix and verified the same
+553 × 523-pixel clip opening fully visible in Fit afterward.
+
+## September 18 pinned color palettes
+
+All 74 tests pass, including the five Palette Lab checks and the new main-app
+integration check. SnipShelf and Palette Lab now use the same `PaletteKit`
+analysis, settings, and color-strip components. Each main-app pin owns its
+analysis; saved defaults are shared within the app and persist separately from
+the Lab. SnipShelf imports existing Lab defaults only when first initializing
+its own palette preferences.
+
+The integration check opens actual reference windows, analyzes original PNGs,
+checks independent tuning and reuse when focusing a pin, applies updated saved
+defaults across pins and Settings, and checks defaults on newly opened pins.
+Closing a pin cancels pending work without publishing a late result. Analysis
+preserves source PNG bytes and the image-copy payload. Existing capture, shelf,
+zoom, dragging, reference-window, and storage tests also pass. The full log is
+`.local/palette-lab/main-integration-tests.log`; compact light/dark reference
+renders are in `.local/palette-integration/`.
+
+Direct Computer Use checks in the packaged main app verified the white-haired
+illustration's subject proportions, HEX copying into the system clipboard,
+the analysis-area preview, Whole Image switching, and Restore Default. The Lab's
+saved six-color/0.16/Subject Only default was imported into SnipShelf. Escape
+dismisses the settings popover while retaining the pin and its zoom; the seven
+affected tests pass after this keyboard fix (`.local/palette-lab/escape-integration-tests.log`).
+
+## September 18 Palette Lab experiment
+
+The independent `PaletteLab` SwiftPM executable and its five focused tests build
+and pass. Known-color fixtures check near-color merging, 67.5/30/2.5 proportions,
+preservation of a 2% orange accent when reducing four groups to three, centroid
+color fidelity, alpha-weighted coverage, fully transparent and single-color
+images, and invalid inputs. Native window checks cover cancelled analysis,
+latest-result ordering, retaining the previous image on failure, and independent
+floating pin snapshots. The subject regression excludes masked white background
+while preserving white subject pixels and multiplying existing transparency by
+soft mask coverage. Scope switching reuses the recognized subject, pins retain
+their own scope, and failed recognition never labels a whole-image palette as a
+subject palette. Logs are under `.local/palette-lab/`.
+
+Saved-default checks use isolated preference domains: temporary settings do not
+write defaults, all three settings survive a fresh model and preferences
+instance, Restore Default reanalyzes the current image using the cached subject,
+and invalid stored values fall back to supported settings. The focused run is
+`.local/palette-lab/defaults-tests.log`.
+Direct Computer Use checks saved Subject Only, six colors, and merge strength
+0.16; temporarily switching to Whole Image and pressing Restore Default brought
+back the subject palette. Quitting and reopening the packaged Lab retained all
+three values and showed Using default. SnipShelf continued running separately.
+
+Direct Computer Use plugin inspection confirmed an imported image, its color
+strip, and a floating pin with the strip below the image. The SnipShelf app kept
+running separately. Main-app integration is covered above; manual color
+overrides remain outside this experiment.
+
+Analysis uses [Core Image KMeans](https://developer.apple.com/documentation/coreimage/cikmeans)
+for 16 candidate groups, then [Oklab](https://bottosson.github.io/posts/oklab/)
+distance to merge similar colors and favor a distinct accent. Source previews
+are limited to 4096 pixels on their longest edge; analysis samples at most 384.
+Fractions describe groups of visible colors and account for alpha. Reducing the
+color limit assigns omitted groups to their nearest retained color. The accent
+heuristic considers candidates with at least 0.5% of visible coverage; tiny
+details and semantic importance still need evaluation on varied real images.
+Nothing is saved to the main library and no 60/30/10 proportions are imposed.
+
+Subject Only uses a native [Vision foreground instance mask](https://developer.apple.com/documentation/vision/vninstancemaskobservation)
+for all detected foreground instances, applying alpha to the original colors.
+Whole Image includes opaque backgrounds. Recognition and no-subject results are
+cached for the current image while tuning palette settings. On the reported
+white-haired illustration, with six colors and merge distance 0.16, the pale
+group falls from 70.37% of the whole image to 23.55% of the subject; cyan is
+32.93%, blue-gray 30.82%, dark blue-gray 11.66%, and orange 1.04%. The white hair
+remains visible. A thin pale fringe remains on some edges, so this is an
+estimated subject palette, not a manually verified silhouette. Visual output
+and measurements are in `.local/palette-lab/subject-result.png` and
+`.local/palette-lab/subject-probe.log`.
+Direct Computer Use inspection of the rebuilt Lab confirmed the subject preview,
+scope picker, and these color proportions. Scope switching and pinned subject
+snapshots passed the native window test; a live click was stopped by the plugin
+because the user was interacting with the window.
+
+## September 18 independent capture shortcuts
+
+All 67 checks passed. The shortcut regression also passes with native Carbon hotkey events dispatched through the installed handler: each tool switches an empty canvas, explicit modes override the last-used preference, and unfinished strokes and previews retain their tool and exact pixels. Actual hotkey registrations check internal and external conflicts, preservation of the previous working binding, independent saved preferences, and recording an already assigned combination. Logs are `.local/tool-shortcuts-tests.log` and `.local/tool-shortcuts-targeted.log`.
+
+Direct Computer Use plugin calls verified the settings layout, changing Lasso's binding, the duplicate-shortcut error, and restoring its original binding using isolated QA storage. This path works without `@oai/sky`. Plugin key delivery did not activate the system-wide hotkeys, so physical activation from another app remains a manual check; native event dispatch does not establish that end-to-end behavior.
+
+The follow-up removes the required modifiers. A focused native recorder regression passed for single letters, function keys, Option-only and Shift-only combinations, readable key labels, and modified Escape versus plain Escape cancellation. Direct plugin checks also recorded `L`, `F18`, `⌥L`, and `⇧P` successfully in isolated QA preferences. The focused test log is `.local/flexible-shortcuts-targeted.log`.
+
+## September 18 library and capture update
+
+All 66 checks passed with the optional interface renders enabled. New checks cover cross-group name search, accent-insensitive matching, preview navigation within results, native text-editing shortcut routing, search selection restoration after rename/delete/undo, and imports that do not match the query. The native collection also verifies adaptive column counts.
+
+Storage checks cover persistent Recently Deleted records, original group restoration, organization undo, failed index writes, and permanent deletion without resurrection through old undo history. Backup checks round-trip active and deleted clips, names, groups, and original PNG bytes; replace an existing backup; retain the previous library on restore; accept a version-2 backup; and reject missing images, asset symlinks, nested backup destinations, and future indexes without replacing current data.
+
+Native window tests draw rectangles in both directions, compare exact PNG pixels and opaque corners, reject tiny rectangles, preserve independent background-removal choices, and save two selections from the same source into the chosen group. Reference tests verify actual-size/Fit, Space-drag panning without starting file export, and show/hide behavior.
+
+Light/dark cached renders under `.local/features-ui/` cover compact capture previews with destination controls, the rectangle toolbar at 640 × 420, narrow and wide search results, Recently Deleted, settings, and pinned references. These inspect layout; compositor-backed glass is not faithfully captured. The full log is `.local/features-final-tests.log`.
+
+Computer Use initialized but app inspection returned `Trusted RPC service is not configured: sky`. Physical pointer feel, trackpad pinch, the file-picker backup workflow, and global hotkeys from another app remain manual checks. Screen capture still uses the existing permission path; rectangle and continuous-capture checks use the same native canvas with a local image.
 
 ## Automated checks
 
@@ -12,7 +148,7 @@ DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test
 codesign --verify --strict dist/SnipShelf.app
 ```
 
-The suite contains **59 behavioral tests** plus optional interface-rendering and real-image subject-mask checks covering:
+The suite contains **76 tests**, including optional interface-rendering and real-image subject-mask checks, covering:
 
 | Area | Coverage |
 | --- | --- |
@@ -258,7 +394,7 @@ Earlier local QA sessions verified image import, selection review and confirmati
 - Physical mouse/trackpad feel on complex artwork, low-contrast edges, and dense textures.
 - The complete screen-recording permission and real screen-capture flow, including scale and window exclusion.
 - Physical drag/drop into Figma and Finder, and hover-open during an external drag. Clipboard checks do not establish drag/drop interoperability.
-- Global shortcut activation from other apps and shortcut conflict recovery.
+- Physical global shortcut activation from other apps. Registration conflicts and preservation of the previous shortcut are covered by native tests; recording and duplicate feedback were checked through the direct plugin.
 - Mixed-density displays, display removal, Dock relocation, and fullscreen Spaces.
 - Light appearance, Reduce Transparency, Reduce Motion, and spoken VoiceOver navigation.
 - HEIC/WebP sample files, macOS 26 runtime, and Intel hardware. Current local runtime tests use macOS 27 on Apple Silicon.

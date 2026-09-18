@@ -13,12 +13,16 @@ Draw around part of an image, review the transparent cutout, and keep it nearby 
 - Fluid freehand lasso with adaptive stabilization, closing assistance, and gentle edge help.
 - Default-on native subject masks, Restore/Erase touch-up brushes, and a guide showing removed pixels.
 - Polygon selection, zoom and pan, compact cutout confirmation, refinement undo, and Redraw / Refine / Keep Clip controls.
+- Rectangle capture keeps the background by default, with its own saved background-removal preference. Choose the destination group in Capture Preview, or Keep & Continue to collect more from the same frozen image.
 - A floating shelf that tucks against the screen edge, with multi-selection, a resizable image preview, clipboard support, image renaming, and undo for organization and deletion.
 - Groups for related references, with one main image, two separate thumbnails, and a +N indicator for additional clips. Each location remembers its selection and scroll position. Grouping, moves, renaming, and dissolution can be undone without losing newer clips.
 - Independent floating reference windows for groups and individual images. Pin images directly from a group, keep references above your design app, and move or resize each window separately. Each pinned image remembers its own background.
+- Proportional color strips below previews and pinned images, with similar shades merged and distinct accents retained. Click a color to copy HEX. Analyze the subject or the whole image, adjust each open image, and save defaults in its analysis popover or Settings → Color Palettes.
 - PNG cutouts with transparency, stored locally and available to other apps through copy and drag.
+- Search image and group names across the entire shelf with Command–F. Wider shelves show more columns, and pinned references support zoom and Space-drag panning.
+- Recently Deleted retains removed clips across launches. Back up the complete library to a Finder package and restore it with validation and an automatic copy of the previous library.
 
-Requires **macOS 26+**. Local builds have been tested on Apple Silicon. The app lives in the menu bar, with **Command–Shift–2** as the default capture shortcut. Screen capture requires macOS screen-recording permission; image import and recropping do not.
+Requires **macOS 26+**. Local builds have been tested on Apple Silicon. The app lives in the menu bar. **Control–Command–1 / 2 / 3** start Lasso / Polygon / Rectangle; **Command–Shift–2** uses the last tool. All capture shortcuts are customizable in Settings. Screen capture requires macOS screen-recording permission; image import and recropping do not.
 
 See the [usage guide](docs/usage.md) for shortcuts, selection behavior, and data recovery, and [validation notes](docs/validation.md) for test coverage and current limitations.
 
@@ -34,6 +38,37 @@ DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test
 ```
 
 The script also accepts `--verify`, `--logs`, and `--debug`. Set `DEVELOPER_DIR` to use another Xcode installation; the script does not change global `xcode-select`. Builds use local ad-hoc signing and are not notarized.
+
+### Palette Lab
+
+Run `./scripts/palette_lab.sh` to build and open **Palette Lab**, a separate
+experimental app for image palettes. Open, paste, or drop an image; its color
+strip sits directly below it, with widths based on the estimated visible-color
+proportions. Click a swatch to copy its HEX. **Pin** opens a floating snapshot
+that keeps its own image and palette while you try another image.
+
+**Subject Only** is the initial default: background areas are excluded, and the
+preview shows the detected subject. White subject details still count. Switch to
+**Whole Image** to include backgrounds or analyze images without a clear subject.
+If recognition fails, the Lab shows a message instead of a misleading palette.
+
+Start with **Examples**, or expand **Analysis Settings** to compare the color
+limit and how strongly similar shades merge. Small, distinct accents compete
+for a palette slot; transparent space is excluded. Single-color images stay
+single-color. Proportions are measured rather than forced to 60/30/10.
+
+Use **Save as Default** in Analysis Settings to remember the current color
+source, color limit, and merge strength for future launches. Temporary changes
+stay in the current session; **Restore Default** returns to your saved settings
+and updates the current palette. Existing pins keep their own results.
+
+Palette Lab has its own executable and bundle identifier. Images and pins stay
+in memory; analysis defaults use the Lab's own preferences. The Lab does not
+read or write the SnipShelf library or preferences. Both apps share the analysis,
+color strip, and settings components. SnipShelf imports a saved Lab default once
+if it has no palette default yet. Build only:
+`./scripts/palette_lab.sh --build`. Run its checks with
+`DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test --filter PaletteLabTests`.
 
 ### Snip Lab
 
