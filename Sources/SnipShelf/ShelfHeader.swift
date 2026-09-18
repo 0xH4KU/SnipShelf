@@ -2,8 +2,10 @@ import SwiftUI
 
 struct ShelfHeader: View {
     let app: AppController
+    @FocusState private var searching: Bool
 
     var body: some View {
+        @Bindable var store = app.store
         VStack(spacing: 4) {
             HStack(spacing: 8) {
                 if app.store.currentFolder != nil {
@@ -49,6 +51,21 @@ struct ShelfHeader: View {
                     .disabled(app.store.isReadOnly)
             }
             .buttonStyle(.bordered).controlSize(.regular)
+
+            HStack(spacing: 6) {
+                Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+                TextField("Search all groups", text: $store.searchText)
+                    .textFieldStyle(.plain).focused($searching)
+                    .accessibilityLabel("Search images and group names")
+                    .onExitCommand { store.searchText = ""; searching = false }
+                if !store.searchText.isEmpty {
+                    Button("Clear Search", systemImage: "xmark.circle.fill") { store.searchText = "" }
+                        .labelStyle(.iconOnly).buttonStyle(.plain).foregroundStyle(.secondary)
+                }
+            }
+            .padding(7).background(.quaternary, in: RoundedRectangle(cornerRadius: 8))
+            .padding(.top, 4)
+            .onChange(of: app.searchFocusRequest) { searching = true }
         }
         .padding(.horizontal, 14).padding(.vertical, 8)
     }

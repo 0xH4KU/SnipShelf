@@ -668,12 +668,21 @@ final class InteractionTests: XCTestCase {
             store.openFolder(emptyFolder.id)
             try await render(NSHostingView(rootView: ShelfView(app: app)), size: CGSize(width: 300, height: 280), name: "folder-empty-small-" + suffix, appearance: appearance)
             store.dissolveFolder(emptyFolder.id)
-            try await render(NSHostingView(rootView: SettingsView(app: app)), size: CGSize(width: 460, height: 360), name: "settings-" + suffix, appearance: appearance)
+            try await render(NSHostingView(rootView: SettingsView(app: app)), size: CGSize(width: 480, height: 620), name: "settings-" + suffix, appearance: appearance)
             model.showCutout = true
             try await render(NSHostingView(rootView: CaptureReviewView(model: model, refine: {})), size: CGSize(width: 440, height: 540), name: "cutout-" + suffix, appearance: appearance)
             model.showCutout = false
             try await render(NSHostingView(rootView: CaptureReviewView(model: model, refine: {})), size: CGSize(width: 440, height: 540), name: "original-" + suffix, appearance: appearance)
             try await render(NSHostingView(rootView: CaptureReviewView(model: model, refine: {})), size: CGSize(width: 360, height: 440), name: "touch-up-small-" + suffix, appearance: appearance)
+            store.searchText = "Study"
+            try await render(NSHostingView(rootView: ShelfView(app: app)), size: CGSize(width: 340, height: 440), name: "search-" + suffix, appearance: appearance)
+            try await render(NSHostingView(rootView: ShelfView(app: app)), size: CGSize(width: 700, height: 540), name: "search-wide-" + suffix, appearance: appearance)
+            store.searchText = ""
+            let deletedID = store.clips[0].id
+            store.delete([deletedID])
+            try await render(NSHostingView(rootView: RecentlyDeletedView(app: app)), size: CGSize(width: 610, height: 400), name: "recently-deleted-" + suffix, appearance: appearance)
+            store.undo()
+            store.openFolder(nil)
             for edge in ["left", "right"] {
                 app.shelf.snapEdge = edge
                 try await render(NSHostingView(rootView: ShelfView(app: app).background(Color(nsColor: .windowBackgroundColor))),

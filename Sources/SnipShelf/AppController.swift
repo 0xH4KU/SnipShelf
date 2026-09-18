@@ -34,6 +34,8 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
     var draggedClipIDs: Set<UUID> = []
     var backdrop: Int { didSet { defaults.set(backdrop, forKey: "backdrop") } }
     var shortcutLabel: String
+    var searchFocusRequest = 0
+    @ObservationIgnored var shelfColumns = 2
     private var previewID: UUID?
     var previewClip: Clip? {
         get { store.clips.first { $0.id == previewID } }
@@ -51,6 +53,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
     @ObservationIgnored private var captureReviewWindow: ShelfPanel?
     @ObservationIgnored private var settingsWindow: NSWindow?
     @ObservationIgnored private var aboutWindow: NSWindow?
+    @ObservationIgnored var deletedWindow: NSWindow?
     @ObservationIgnored private var previewWindow: ShelfPanel?
     @ObservationIgnored private var previousApp: NSRunningApplication?
     @ObservationIgnored private var lastExternalApp: NSRunningApplication?
@@ -141,6 +144,13 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
         registerShortcut(code: code, modifiers: modifiers, label: shortcutLabel)
     }
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        if store.transferringLibrary {
+            let alert = NSAlert()
+            alert.messageText = "A library transfer is in progress"
+            alert.informativeText = "Wait for the backup or restore to finish before quitting."
+            alert.runModal()
+            return .terminateCancel
+        }
         if captureModel?.hasOutline == true {
             let alert = NSAlert()
             alert.messageText = "A selection has not been confirmed"
@@ -274,8 +284,8 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
         menu.addItem(actionItem("New Group with Selection…", action: #selector(selectedNewFolder)))
         let move = NSMenuItem(title: "Move to", action: nil, keyEquivalent: "")
         let destinations = NSMenu()
-        if store.currentFolderID != nil { destinations.addItem(actionItem("Shelf", action: #selector(selectedMove(_:)))) }
-        for folder in store.folders where folder.id != store.currentFolderID {
+        if store.currentFolderID != nil || store.isSearching { destinations.addItem(actionItem("Shelf", action: #selector(selectedMove(_:)))) }
+        for folder in store.folders where store.isSearching || folder.id != store.currentFolderID {
             let item = actionItem(folder.name, action: #selector(selectedMove(_:)))
             item.representedObject = folder.id.uuidString
             destinations.addItem(item)
@@ -286,7 +296,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
         return menu
     }
 
-    private func readyForNewImage() -> Bool {
+    func readyForNewImage() -> Bool {
         if let window = captureModel?.reviewing == true ? (captureReviewWindow ?? captureWindow) : captureWindow {
             NSApp.activate(ignoringOtherApps: true)
             window.makeKeyAndOrderFront(nil)
@@ -295,10 +305,10 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
         guard store.pendingImage == nil else {
             store.message = "Save or export your unsaved clip before adding another image."; return false
         }
-        return !busy
+        return !busy && !store.transferringLibrary
     }
     func capture() {
-        guard readyForNewImage() else { return }
+        guard readyForNewImage(), !store.isReadOnly else { return }
         rememberFocus()
         guard CGPreflightScreenCaptureAccess() else {
             CGRequestScreenCaptureAccess()
@@ -545,12 +555,18 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
     func clearShelf() {
         let alert = NSAlert()
         alert.messageText = "Clear all \(store.clips.count) clips?"
-        alert.informativeText = "You can undo this until you quit SnipShelf. Exported files are unaffected."
+        alert.informativeText = "These clips will move to Recently Deleted, where you can restore them later. Exported files are unaffected."
         alert.addButton(withTitle: "Cancel"); alert.addButton(withTitle: "Clear Shelf")
         if alert.runModal() == .alertSecondButtonReturn { store.delete(Set(store.clips.map(\.id))) }
     }
     func handleKey(_ event: NSEvent) -> Bool {
         let command = event.modifierFlags.contains(.command)
+        if command && event.charactersIgnoringModifiers?.lowercased() == "f" {
+            searchFocusRequest += 1
+            return true
+        }
+        // Editing search text must keep native copy, paste, select-all and deletion.
+        if shelf.panel?.firstResponder is NSTextView { return false }
         if command {
             switch event.charactersIgnoringModifiers?.lowercased() {
             case "v": paste()
@@ -576,15 +592,16 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
         case 51, 117: store.delete(store.selectedIDs)
         case 53:
             if previewClip != nil { previewClip = nil }
+            else if !store.searchText.isEmpty { store.searchText = "" }
             else if !store.selectedIDs.isEmpty || store.selectedFolderID != nil { store.selectedIDs = [] }
             else if store.currentFolderID != nil { openFolder(nil) }
             else { shelf.collapse() }
         case 123, 124, 125, 126:
             if event.modifierFlags.contains(.shift) { return false }
-            let ids = (store.currentFolderID == nil ? store.folders.map(\.id) : []) + store.visibleClips.map(\.id)
+            let ids = (store.currentFolderID == nil && !store.isSearching ? store.folders.map(\.id) : []) + store.visibleClips.map(\.id)
             guard !ids.isEmpty else { return true }
             let current = ids.firstIndex { $0 == store.selection }
-            let delta = event.keyCode == 123 ? -1 : event.keyCode == 124 ? 1 : event.keyCode == 125 ? 2 : -2
+            let delta = event.keyCode == 123 ? -1 : event.keyCode == 124 ? 1 : event.keyCode == 125 ? shelfColumns : -shelfColumns
             store.selection = ids[min(ids.count - 1, max(0, current.map { $0 + delta } ?? 0))]
         default: return false
         }
@@ -593,7 +610,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     private func updatePreview() {
         guard let clip = previewClip else { previewWindow?.orderOut(nil); return }
-        if store.currentFolderID != clip.folderID { store.openFolder(clip.folderID) }
+        if !store.isSearching && store.currentFolderID != clip.folderID { store.openFolder(clip.folderID) }
         store.selection = clip.id
         if previewWindow == nil {
             let window = ShelfPanel(contentRect: CGRect(x: 0, y: 0, width: 720, height: 580),
@@ -618,6 +635,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
     var previewClips: [Clip] {
         guard let clip = store.clips.first(where: { $0.id == previewClip?.id }) else { return [] }
+        if store.isSearching { return store.visibleClips }
         return store.clips.filter { $0.folderID == clip.folderID }
     }
     func adjacentPreview(_ delta: Int) -> Clip? {
@@ -698,7 +716,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
         defaults.set(label, forKey: "shortcutLabel"); shortcutLabel = label
     }
     func showSettings() {
-        if settingsWindow == nil { settingsWindow = utilityWindow(title: "SnipShelf Settings", size: CGSize(width: 460, height: 360), content: SettingsView(app: self)) }
+        if settingsWindow == nil { settingsWindow = utilityWindow(title: "SnipShelf Settings", size: CGSize(width: 500, height: min(720, shelf.screen.visibleFrame.height - 40)), content: SettingsView(app: self)) }
         NSApp.activate(ignoringOtherApps: true); settingsWindow?.makeKeyAndOrderFront(nil)
     }
     func showAbout() {

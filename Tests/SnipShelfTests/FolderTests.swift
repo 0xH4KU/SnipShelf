@@ -260,7 +260,7 @@ final class FolderTests: XCTestCase {
         XCTAssertEqual(reload.visibleClips.map(\.id), [a.id])
         XCTAssertEqual(try Data(contentsOf: reload.url(for: a)), png)
         XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: root.path).count, 5)
-        XCTAssertEqual(try JSONDecoder().decode(ShelfStore.Index.self, from: Data(contentsOf: index)).version, 2)
+        XCTAssertEqual(try JSONDecoder().decode(ShelfStore.Index.self, from: Data(contentsOf: index)).version, 3)
     }
 
     @MainActor func testFolderWriteFailuresAndInvalidIndexesPreserveData() async throws {

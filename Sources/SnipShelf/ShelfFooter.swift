@@ -37,10 +37,10 @@ struct ShelfFooter: View {
                         Menu("Move to Group", systemImage: "rectangle.stack") {
                             Button("New Group with Selection…") { app.editFolder(including: store.selectedIDs) }
                             Divider()
-                            if store.currentFolderID != nil { Button("Shelf") { store.move(store.selectedIDs, to: nil) } }
+                            if store.currentFolderID != nil || store.isSearching { Button("Shelf") { store.move(store.selectedIDs, to: nil) } }
                             ForEach(store.folders) { folder in
                                 Button(folder.name) { store.move(store.selectedIDs, to: folder.id) }
-                                    .disabled(folder.id == store.currentFolderID)
+                                    .disabled(!store.isSearching && folder.id == store.currentFolderID)
                             }
                         }.disabled(store.isReadOnly)
                         Button("Delete Selected Clips", systemImage: "trash", role: .destructive) { store.delete(store.selectedIDs) }
@@ -55,6 +55,11 @@ struct ShelfFooter: View {
                     .disabled(app.busy || store.isReadOnly)
                 Button("Clear Shelf…", systemImage: "trash", role: .destructive, action: app.clearShelf)
                     .disabled(store.clips.isEmpty || store.isReadOnly)
+                Button("Recently Deleted (\(store.deleted.count))…", systemImage: "trash", action: app.showRecentlyDeleted)
+                Button("Back Up Library…", systemImage: "externaldrive", action: app.backupLibrary)
+                    .disabled(app.busy || store.isReadOnly || store.pendingImage != nil)
+                Button("Restore Library…", systemImage: "arrow.triangle.2.circlepath", action: app.restoreLibrary)
+                    .disabled(app.busy || store.transferringLibrary || store.pendingImage != nil)
                 Divider()
                 Button("Settings…", systemImage: "gearshape", action: app.showSettings)
                 Button("About SnipShelf", systemImage: "info.circle", action: app.showAbout)
@@ -70,10 +75,12 @@ struct ShelfFooter: View {
 
     private var status: String {
         if let status = app.status { return status }
+        if store.transferringLibrary { return "Transferring library…" }
         if app.busy { return "Adding images…" }
         if store.latestID != nil { return "Clip saved" }
         if !store.selectedIDs.isEmpty { return "\(store.selectedIDs.count) selected" }
         let count = store.visibleClips.count
+        if store.isSearching { return "\(count) \(count == 1 ? "result" : "results") · All groups" }
         let clips = "\(count) \(count == 1 ? "clip" : "clips")"
         guard store.currentFolderID == nil, !store.folders.isEmpty else { return clips }
         return "\(store.folders.count) \(store.folders.count == 1 ? "group" : "groups") · \(clips)"

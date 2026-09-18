@@ -58,13 +58,15 @@ struct ShelfCollection: NSViewRepresentable {
             coordinator.updating = false
             coordinator.rememberScroll(scroll.contentView)
         }
-        let restorePosition = referenceFolderID == nil && (!coordinator.loaded || coordinator.restoringPosition || coordinator.displayedFolderID != app.store.currentFolderID)
+        let restorePosition = referenceFolderID == nil && (!coordinator.loaded || coordinator.restoringPosition || coordinator.displayedFolderID != app.store.currentFolderID || coordinator.displayedSearch != app.store.searchText)
         coordinator.displayedFolderID = app.store.currentFolderID
+        coordinator.displayedSearch = app.store.searchText
         let members = Dictionary(grouping: app.store.clips.reversed(), by: \.folderID)
-        let groups: [Entry] = referenceFolderID == nil && app.store.currentFolderID == nil
+        let groups: [Entry] = referenceFolderID == nil && app.store.currentFolderID == nil && !app.store.isSearching
             ? app.store.folders.map { .group($0, members[$0.id] ?? []) } : []
         let clips = referenceFolderID.map { id in app.store.clips.filter { $0.folderID == id } } ?? app.store.visibleClips
         let entries = groups + clips.map(Entry.clip)
+        collection.updateLayout(for: scroll.contentView.bounds.width)
         coordinator.selectedIDs.formIntersection(Set(entries.map(\.id)))
         if coordinator.entries != entries {
             coordinator.entries = entries
@@ -85,10 +87,11 @@ struct ShelfCollection: NSViewRepresentable {
         }
         if restorePosition && !app.shelf.isAnimating {
             let folderID = app.store.currentFolderID
-            let origin = app.store.browsingStates[folderID]?.scrollOrigin ?? .zero
+            let query = app.store.searchText
+            let origin = app.store.isSearching ? .zero : (app.store.browsingStates[folderID]?.scrollOrigin ?? .zero)
             // A remounted collection receives its viewport size after updateNSView returns.
             DispatchQueue.main.async { [weak scroll, weak coordinator] in
-                guard let scroll, let coordinator, coordinator.displayedFolderID == folderID else { return }
+                guard let scroll, let coordinator, coordinator.displayedFolderID == folderID, app.store.searchText == query else { return }
                 defer { coordinator.restoringPosition = false }
                 guard scroll.window != nil, app.store.currentFolderID == folderID, !app.shelf.collapsed else { return }
                 collection.layoutSubtreeIfNeeded()
@@ -99,7 +102,7 @@ struct ShelfCollection: NSViewRepresentable {
         coordinator.loaded = true
         for item in collection.visibleItems() {
             if let item = item as? Item, let index = collection.indexPath(for: item), entries.indices.contains(index.item) {
-                item.configure(app: app, entry: entries[index.item], selected: selected.contains(entries[index.item].id))
+                item.configure(app: app, entry: entries[index.item], selected: selected.contains(entries[index.item].id), showsLocation: referenceFolderID == nil && app.store.isSearching)
             }
         }
     }
@@ -110,7 +113,7 @@ struct ShelfCollection: NSViewRepresentable {
             (view as? CardView)?.setHovered(false, animated: false)
         }
         override var isSelected: Bool { didSet { (view as? CardView)?.selected = isSelected } }
-        func configure(app: AppController, entry: Entry, selected: Bool? = nil) {
+        func configure(app: AppController, entry: Entry, selected: Bool? = nil, showsLocation: Bool = false) {
             guard let card = view as? CardView else { return }
             if card.folderID != entry.folder?.id { card.dropTargeted = false }
             card.folderID = entry.folder?.id
@@ -125,6 +128,8 @@ struct ShelfCollection: NSViewRepresentable {
             card.pinButton.referenceTarget = entry.folder.map { .group($0.id) } ?? .clip(entry.id)
             let name = switch entry { case .clip(let clip): clip.name; case .group(let folder, _): folder.name }
             card.caption.font = .systemFont(ofSize: 11, weight: entry.folder == nil ? .regular : .medium)
+            card.location.isHidden = !showsLocation
+            card.location.stringValue = entry.clip.map { app.store.locationName(for: $0) } ?? ""
             card.caption.toolTip = name
             let pinLabel = entry.folder != nil ? "Open \(name) in a reference window" : "Pin \(name) as a reference"
             card.pinButton.image = NSImage(systemSymbolName: entry.folder != nil ? "arrow.up.forward.square" : "pin", accessibilityDescription: pinLabel)
@@ -160,6 +165,7 @@ struct ShelfCollection: NSViewRepresentable {
     final class CardView: NSView {
         let picture = NSImageView()
         let caption = NSTextField(labelWithString: "")
+        let location = NSTextField(labelWithString: "")
         let related = [NSImageView(), NSImageView()]
         let relatedFrames = [ThumbnailFrame(), ThumbnailFrame()]
         let more = NSTextField(labelWithString: "")
@@ -181,6 +187,11 @@ struct ShelfCollection: NSViewRepresentable {
             caption.alignment = .left
             caption.lineBreakMode = .byTruncatingMiddle
             addSubview(picture); addSubview(caption)
+            location.font = .systemFont(ofSize: 10)
+            location.textColor = .secondaryLabelColor
+            location.lineBreakMode = .byTruncatingMiddle
+            location.isHidden = true
+            addSubview(location)
             for (image, frame) in zip(related, relatedFrames) {
                 image.imageScaling = .scaleProportionallyUpOrDown
                 image.isHidden = true
@@ -245,6 +256,7 @@ struct ShelfCollection: NSViewRepresentable {
             }
             for (image, frame) in zip(related, relatedFrames) { frame.isHidden = image.isHidden }
             caption.frame = CGRect(x: 6, y: 132, width: max(1, bounds.width - 35), height: 18)
+            location.frame = CGRect(x: 6, y: 151, width: max(1, bounds.width - 12), height: 16)
             pinButton.frame = CGRect(x: bounds.width - 25, y: 130, width: 22, height: 22)
         }
         override func draw(_ dirtyRect: NSRect) {
@@ -277,16 +289,11 @@ struct ShelfCollection: NSViewRepresentable {
     }
     final class ClipView: NSClipView {
         override func setFrameSize(_ newSize: NSSize) {
-            let layout = (documentView as? NSCollectionView)?.collectionViewLayout as? NSCollectionViewFlowLayout
-            func fitItems(to width: CGFloat) {
-                guard let layout, width > 26 else { return }
-                let size = NSSize(width: min(floor(width - 26), max(110, floor((width - 36) / 2))), height: 153)
-                if layout.itemSize != size { layout.itemSize = size }
-            }
+            let collection = documentView as? CollectionView
             // AppKit prepares the grid as the viewport changes, before resizing its document view.
-            fitItems(to: min(bounds.width, newSize.width))
+            collection?.updateLayout(for: min(bounds.width, newSize.width))
             super.setFrameSize(newSize)
-            fitItems(to: newSize.width)
+            collection?.updateLayout(for: newSize.width)
         }
     }
     final class CollectionView: NSCollectionView {
@@ -294,6 +301,14 @@ struct ShelfCollection: NSViewRepresentable {
             .map { NSPasteboard.PasteboardType($0) }
         weak var app: AppController?
         var referenceFolderID: UUID?
+        func updateLayout(for width: CGFloat) {
+            guard let layout = collectionViewLayout as? NSCollectionViewFlowLayout, width > 26 else { return }
+            let columns = max(1, Int((width - 16) / 136))
+            let size = CGSize(width: floor((width - 26 - CGFloat(columns - 1) * 10) / CGFloat(columns)),
+                              height: referenceFolderID == nil && app?.store.isSearching == true ? 173 : 153)
+            if layout.itemSize != size { layout.itemSize = size }
+            if referenceFolderID == nil { app?.shelfColumns = columns }
+        }
         private var dropFolderID: UUID? {
             didSet {
                 for case let item as Item in visibleItems() {
@@ -394,6 +409,7 @@ struct ShelfCollection: NSViewRepresentable {
         var loaded = false
         var restoringPosition = false
         var displayedFolderID: UUID?
+        var displayedSearch = ""
         let referenceFolderID: UUID?
         var selectedIDs: Set<UUID> = []
         init(app: AppController, referenceFolderID: UUID? = nil) { self.app = app; self.referenceFolderID = referenceFolderID }
@@ -401,14 +417,15 @@ struct ShelfCollection: NSViewRepresentable {
             if let clipView = notification.object as? NSClipView { rememberScroll(clipView) }
         }
         func rememberScroll(_ clipView: NSClipView) {
-            guard !updating, !restoringPosition, loaded, referenceFolderID == nil, !app.shelf.collapsed,
+            guard !updating, !restoringPosition, loaded, referenceFolderID == nil, !app.shelf.collapsed, !app.store.isSearching,
                   displayedFolderID == app.store.currentFolderID else { return }
             app.store.browsingStates[displayedFolderID, default: ShelfStore.BrowsingState()].scrollOrigin = clipView.bounds.origin
         }
         func collectionView(_ collectionView: NSCollectionView, numberOfItemsInSection section: Int) -> Int { entries.count }
         func collectionView(_ collectionView: NSCollectionView, itemForRepresentedObjectAt indexPath: IndexPath) -> NSCollectionViewItem {
             let item = collectionView.makeItem(withIdentifier: NSUserInterfaceItemIdentifier("clip"), for: indexPath) as! Item
-            item.configure(app: app, entry: entries[indexPath.item], selected: referenceFolderID != nil ? selectedIDs.contains(entries[indexPath.item].id) : nil)
+            item.configure(app: app, entry: entries[indexPath.item], selected: referenceFolderID != nil ? selectedIDs.contains(entries[indexPath.item].id) : nil,
+                           showsLocation: referenceFolderID == nil && app.store.isSearching)
             return item
         }
         private func updateSelection(_ collection: NSCollectionView) {

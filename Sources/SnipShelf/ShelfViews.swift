@@ -87,20 +87,25 @@ struct ShelfView: View {
                 }.font(.caption).padding(10).background(Color.orange.opacity(0.12))
                     .accessibilityValue("\(pending.width) by \(pending.height) pixels")
             }
-            if !store.visibleClips.isEmpty || (store.currentFolderID == nil && !store.folders.isEmpty) { grid }
+            if !store.visibleClips.isEmpty || (!store.isSearching && store.currentFolderID == nil && !store.folders.isEmpty) { grid }
             else { emptyState }
             Divider().padding(.horizontal, 14)
             ShelfFooter(app: app)
         }
     }
     private var emptyState: some View {
-        ContentUnavailableView {
-            Label(store.currentFolderID == nil ? "Keep inspiration close" : "This group is empty",
-                  systemImage: "square.on.square.dashed")
-        } description: {
-            Text(store.currentFolderID == nil
-                 ? "Capture a detail, or drop an image here."
-                 : "Capture, paste, or drop images into this group.")
+        Group {
+            if store.isSearching { ContentUnavailableView.search(text: store.searchText) }
+            else {
+                ContentUnavailableView {
+                    Label(store.currentFolderID == nil ? "Keep inspiration close" : "This group is empty",
+                          systemImage: "square.on.square.dashed")
+                } description: {
+                    Text(store.currentFolderID == nil
+                         ? "Capture a detail, or drop an image here."
+                         : "Capture, paste, or drop images into this group.")
+                }
+            }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
@@ -180,6 +185,14 @@ struct SettingsView: View {
                     Spacer()
                     Button("Show in Finder") { NSWorkspace.shared.open(app.store.root) }
                 }
+                Button("Recently Deleted…", action: app.showRecentlyDeleted)
+                HStack {
+                    Button("Back Up Library…", action: app.backupLibrary)
+                        .disabled(app.busy || app.store.isReadOnly || app.store.pendingImage != nil)
+                    Button("Restore Library…", action: app.restoreLibrary)
+                        .disabled(app.busy || app.store.transferringLibrary || app.store.pendingImage != nil)
+                }
+                if app.store.transferringLibrary { ProgressView("Transferring library…").controlSize(.small) }
             }
         }.formStyle(.grouped)
     }

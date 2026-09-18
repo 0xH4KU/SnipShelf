@@ -15,12 +15,37 @@ struct ShelfFolder: Codable, Identifiable, Equatable {
     var name: String
 }
 
+struct DeletedClip: Codable, Identifiable, Equatable {
+    var clip: Clip
+    let deletedAt: Date
+    var id: UUID { clip.id }
+}
+
 @MainActor @Observable
 final class ShelfStore {
-    struct Index: Codable { let version: Int; let clips: [Clip]; var folders: [ShelfFolder]? = nil }
+    struct Index: Codable {
+        let version: Int
+        let clips: [Clip]
+        var folders: [ShelfFolder]? = nil
+        var deleted: [DeletedClip]? = nil
+
+        func validate() throws {
+            let groups = folders ?? [], trash = deleted ?? []
+            let folderIDs = Set(groups.map(\.id)), records = clips + trash.map(\.clip)
+            guard (1...3).contains(version), version == 1 || folders != nil,
+                  version < 3 || deleted != nil,
+                  Set(records.map(\.id)).count == records.count,
+                  folderIDs.count == groups.count,
+                  records.compactMap(\.folderID).allSatisfy(folderIDs.contains),
+                  records.allSatisfy({ $0.width > 0 && $0.height > 0 && $0.width <= ImageCore.maxPixels / $0.height }) else {
+                throw ShelfError("The shelf index is from an unsupported version or is damaged.")
+            }
+        }
+    }
     struct UndoChange {
         let name: String
         let clips: [Clip]
+        let deleted: [DeletedClip]
         let folders: [ShelfFolder]
         let folderID: UUID?
     }
@@ -32,11 +57,23 @@ final class ShelfStore {
     let root: URL
     private(set) var clips: [Clip] = []
     private(set) var folders: [ShelfFolder] = []
+    private(set) var deleted: [DeletedClip] = []
     private(set) var currentFolderID: UUID?
     private(set) var undoHistory: [UndoChange] = []
     var undoTitle: String { undoHistory.last.map { "Undo \($0.name)" } ?? "Undo" }
     @ObservationIgnored var browsingStates: [UUID?: BrowsingState] = [:]
-    private(set) var isReadOnly = false
+    private var indexUnreadable = false
+    private(set) var transferringLibrary = false
+    var isReadOnly: Bool { indexUnreadable || transferringLibrary }
+    var searchText = "" {
+        didSet {
+            let wasSearching = !oldValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            if !wasSearching && isSearching { rememberSelection() }
+            if wasSearching && !isSearching { restoreSelection() }
+            else if isSearching { selectedIDs.formIntersection(Set(visibleClips.map(\.id))) }
+        }
+    }
+    var isSearching: Bool { !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
     var message: String?
     var selectedIDs: Set<UUID> = [] { didSet { selectedFolderID = nil } }
     private(set) var selectedFolderID: UUID?
@@ -63,21 +100,14 @@ final class ShelfStore {
             let indexURL = self.root.appendingPathComponent("index.json")
             if FileManager.default.fileExists(atPath: indexURL.path) {
                 let index = try JSONDecoder().decode(Index.self, from: Data(contentsOf: indexURL))
-                let folders = index.folders ?? []
-                let folderIDs = Set(folders.map(\.id))
-                guard (1...2).contains(index.version),
-                      index.version == 1 || index.folders != nil,
-                      Set(index.clips.map(\.id)).count == index.clips.count,
-                      folderIDs.count == folders.count,
-                      index.clips.compactMap(\.folderID).allSatisfy(folderIDs.contains) else {
-                    throw ShelfError("The shelf index is from an unsupported version or is damaged.")
-                }
+                try index.validate()
                 clips = index.clips
-                self.folders = folders
+                folders = index.folders ?? []
+                deleted = index.deleted ?? []
             }
             collectUnusedFiles()
         } catch {
-            isReadOnly = true
+            indexUnreadable = true
             message = "Your saved shelf could not be read. Files have been kept untouched at \(self.root.path). \(error.localizedDescription)"
         }
     }
@@ -86,18 +116,34 @@ final class ShelfStore {
     func thumbnailURL(for clip: Clip) -> URL { root.appendingPathComponent("\(clip.id)-thumb.png") }
     var selectedClip: Clip? { selectedIDs.count == 1 ? clips.first { selectedIDs.contains($0.id) } : nil }
     var currentFolder: ShelfFolder? { folders.first { $0.id == currentFolderID } }
-    var visibleClips: [Clip] { clips.filter { $0.folderID == currentFolderID } }
+    var visibleClips: [Clip] {
+        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else { return clips.filter { $0.folderID == currentFolderID } }
+        let matchingGroups = Set(folders.filter { $0.name.localizedStandardContains(query) }.map(\.id))
+        return clips.filter { $0.name.localizedStandardContains(query) || $0.folderID.map(matchingGroups.contains) == true }
+    }
 
-    func openFolder(_ id: UUID?) {
-        guard currentFolderID != id, id == nil || folders.contains(where: { $0.id == id }) else { return }
+    func locationName(for clip: Clip) -> String { folders.first { $0.id == clip.folderID }?.name ?? "Shelf" }
+
+    private func rememberSelection() {
         browsingStates[currentFolderID, default: BrowsingState()].selectedIDs = selectedIDs
         browsingStates[currentFolderID, default: BrowsingState()].selectedFolderID = selectedFolderID
-        currentFolderID = id
-        let saved = browsingStates[id] ?? BrowsingState()
+    }
+
+    private func restoreSelection() {
+        let saved = browsingStates[currentFolderID] ?? BrowsingState()
         selectedIDs = saved.selectedIDs.intersection(Set(visibleClips.map(\.id)))
-        if id == nil, let folder = saved.selectedFolderID, folders.contains(where: { $0.id == folder }) {
+        if currentFolderID == nil, let folder = saved.selectedFolderID, folders.contains(where: { $0.id == folder }) {
             selectedFolderID = folder
         }
+    }
+
+    func openFolder(_ id: UUID?) {
+        searchText = ""
+        guard currentFolderID != id, id == nil || folders.contains(where: { $0.id == id }) else { return }
+        rememberSelection()
+        currentFolderID = id
+        restoreSelection()
     }
 
     func thumbnail(for clip: Clip) -> NSImage? {
@@ -107,20 +153,27 @@ final class ShelfStore {
         return image
     }
 
-    private func commit(_ next: [Clip], folders nextFolders: [ShelfFolder]? = nil, undoName: String? = nil) throws {
+    private func commit(_ next: [Clip], folders nextFolders: [ShelfFolder]? = nil, deleted nextDeleted: [DeletedClip]? = nil, undoName: String? = nil) throws {
         guard !isReadOnly else { throw ShelfError("The shelf is read-only until its index is repaired. Your existing files are safe.") }
         let nextFolders = nextFolders ?? folders
-        guard next != clips || nextFolders != folders else { return }
-        let data = try JSONEncoder().encode(Index(version: 2, clips: next, folders: nextFolders))
+        let nextDeleted = nextDeleted ?? deleted
+        guard next != clips || nextFolders != folders || nextDeleted != deleted else { return }
+        let index = Index(version: 3, clips: next, folders: nextFolders, deleted: nextDeleted)
+        try index.validate()
+        let data = try JSONEncoder().encode(index)
         try data.write(to: root.appendingPathComponent("index.json"), options: .atomic)
         if let undoName {
             let clipsByID = Dictionary(uniqueKeysWithValues: next.map { ($0.id, $0) })
+            let deletedByID = Dictionary(uniqueKeysWithValues: nextDeleted.map { ($0.id, $0) })
             undoHistory.append(UndoChange(name: undoName,
                 clips: clips.filter { clipsByID[$0.id] != $0 },
+                deleted: deleted.filter { deletedByID[$0.id] != $0 },
                 folders: folders, folderID: currentFolderID))
         }
         clips = next
         folders = nextFolders
+        deleted = nextDeleted
+        if isSearching { selectedIDs.formIntersection(Set(visibleClips.map(\.id))) }
     }
 
     private func folderName(_ name: String, excluding id: UUID? = nil) throws -> String {
@@ -180,7 +233,12 @@ final class ShelfStore {
         guard folders.contains(where: { $0.id == id }) else { return }
         do {
             let next = moving(Set(clips.filter { $0.folderID == id }.map(\.id)), to: nil)
-            try commit(next, folders: folders.filter { $0.id != id }, undoName: "Dissolve Group")
+            let trash = deleted.map { entry in
+                var entry = entry
+                if entry.clip.folderID == id { entry.clip.folderID = nil }
+                return entry
+            }
+            try commit(next, folders: folders.filter { $0.id != id }, deleted: trash, undoName: "Dissolve Group")
             if selectedFolderID == id { selectedFolderID = nil }
             if currentFolderID == id { openFolder(nil) }
         } catch { message = error.localizedDescription }
@@ -202,7 +260,7 @@ final class ShelfStore {
             throw error
         }
         latestID = clip.id
-        if currentFolderID == folderID { selection = clip.id }
+        if visibleClips.contains(where: { $0.id == clip.id }) { selection = clip.id }
         Task { [weak self] in
             try? await Task.sleep(for: .seconds(2))
             if self?.latestID == clip.id { self?.latestID = nil }
@@ -228,7 +286,8 @@ final class ShelfStore {
         let ids = ids.intersection(Set(clips.map(\.id)))
         guard !ids.isEmpty else { return }
         do {
-            try commit(clips.filter { !ids.contains($0.id) }, undoName: "Deletion")
+            let removed = clips.filter { ids.contains($0.id) }.map { DeletedClip(clip: $0, deletedAt: Date()) }
+            try commit(clips.filter { !ids.contains($0.id) }, deleted: removed + deleted, undoName: "Deletion")
             selectedIDs.subtract(ids)
         } catch { message = error.localizedDescription }
     }
@@ -237,7 +296,7 @@ final class ShelfStore {
         guard let change = undoHistory.last else { return }
         do {
             // Restore only this edit's records; captures and imports added later stay intact.
-            let changedClips = Set(change.clips.map(\.id))
+            let changedClips = Set(change.clips.map(\.id) + change.deleted.map(\.id))
             let nextFolders = change.folders
             let folderIDs = Set(nextFolders.map(\.id))
             let next = (clips.filter { !changedClips.contains($0.id) } + change.clips).map { clip in
@@ -245,9 +304,16 @@ final class ShelfStore {
                 if let id = clip.folderID, !folderIDs.contains(id) { clip.folderID = nil }
                 return clip
             }
-            try commit(next.sorted { $0.createdAt > $1.createdAt }, folders: nextFolders)
+            let trash = (deleted.filter { !changedClips.contains($0.id) } + change.deleted).map { entry in
+                var entry = entry
+                if let id = entry.clip.folderID, !folderIDs.contains(id) { entry.clip.folderID = nil }
+                return entry
+            }.sorted { $0.deletedAt > $1.deletedAt }
+            try commit(next.sorted { $0.createdAt > $1.createdAt }, folders: nextFolders, deleted: trash)
             if let id = selectedFolderID, !folderIDs.contains(id) { selectedFolderID = nil }
-            if let first = change.clips.first, let restored = clips.first(where: { $0.id == first.id }) {
+            if isSearching {
+                selectedIDs = Set(visibleClips.filter { changedClips.contains($0.id) }.map(\.id))
+            } else if let first = change.clips.first, let restored = clips.first(where: { $0.id == first.id }) {
                 openFolder(restored.folderID)
                 selectedIDs = Set(visibleClips.filter { changedClips.contains($0.id) }.map(\.id))
             } else { openFolder(change.folderID) }
@@ -255,9 +321,67 @@ final class ShelfStore {
         } catch { message = error.localizedDescription }
     }
 
+    func restoreDeleted(_ ids: Set<UUID>) {
+        let restored = deleted.filter { ids.contains($0.id) }.map(\.clip)
+        guard !restored.isEmpty else { return }
+        do {
+            try commit((clips + restored).sorted { $0.createdAt > $1.createdAt },
+                       deleted: deleted.filter { !ids.contains($0.id) }, undoName: "Restore Clips")
+        } catch { message = error.localizedDescription }
+    }
+
+    func permanentlyDelete(_ ids: Set<UUID>) throws {
+        let ids = ids.intersection(Set(deleted.map(\.id)))
+        guard !ids.isEmpty else { return }
+        try commit(clips, deleted: deleted.filter { !ids.contains($0.id) })
+        undoHistory.removeAll { change in
+            change.clips.contains { ids.contains($0.id) } || change.deleted.contains { ids.contains($0.id) }
+        }
+        collectUnusedFiles()
+    }
+
+    func backup(to destination: URL) async throws {
+        guard !isReadOnly, pendingImage == nil else { throw ShelfError("Finish saving your clip before backing up the library.") }
+        try ShelfBackup.requireSeparate(destination, from: root)
+        transferringLibrary = true
+        defer { transferringLibrary = false }
+        let index = Index(version: 3, clips: clips, folders: folders, deleted: deleted), source = root
+        try await Task.detached(priority: .userInitiated) {
+            try ShelfBackup.write(index, from: source, to: destination)
+        }.value
+    }
+
+    /// Returns the untouched previous library, retained beside the current one.
+    @discardableResult func restoreBackup(from source: URL) async throws -> URL {
+        guard !transferringLibrary, pendingImage == nil else { throw ShelfError("Finish the current save before restoring a library.") }
+        try ShelfBackup.requireSeparate(source, from: root)
+        transferringLibrary = true
+        defer { transferringLibrary = false }
+        let staging = root.deletingLastPathComponent().appendingPathComponent(".snipshelf-restore-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: staging) }
+        let index = try await Task.detached(priority: .userInitiated) {
+            let index = try ShelfBackup.readIndex(at: source)
+            try ShelfBackup.copy(index, from: source, to: staging)
+            return index
+        }.value
+        let recoveryName = "\(root.lastPathComponent)-before-restore-\(UUID().uuidString).snipshelfbackup"
+        let currentIndex = root.appendingPathComponent("index.json")
+        if !indexUnreadable && !FileManager.default.fileExists(atPath: currentIndex.path) {
+            try JSONEncoder().encode(Index(version: 3, clips: clips, folders: folders, deleted: deleted)).write(to: currentIndex, options: .atomic)
+        }
+        _ = try FileManager.default.replaceItemAt(root, withItemAt: staging, backupItemName: recoveryName,
+                                                  options: .withoutDeletingBackupItem)
+        clips = index.clips; folders = index.folders ?? []; deleted = index.deleted ?? []
+        undoHistory = []; browsingStates = [:]; currentFolderID = nil
+        searchText = ""; selectedIDs = []; latestID = nil
+        thumbnails.removeAllObjects(); indexUnreadable = false
+        return root.deletingLastPathComponent().appendingPathComponent(recoveryName)
+    }
+
     func collectUnusedFiles() {
         guard !isReadOnly else { return }
-        let kept = Set((clips + undoHistory.flatMap(\.clips)).flatMap { ["\($0.id).png", "\($0.id)-thumb.png"] })
+        let kept = Set((clips + deleted.map(\.clip) + undoHistory.flatMap(\.clips) + undoHistory.flatMap { $0.deleted.map(\.clip) })
+            .flatMap { ["\($0.id).png", "\($0.id)-thumb.png"] })
         guard let files = try? FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil) else { return }
         for file in files where file.pathExtension == "png" && !kept.contains(file.lastPathComponent) {
             let stem = file.deletingPathExtension().lastPathComponent.replacingOccurrences(of: "-thumb", with: "")

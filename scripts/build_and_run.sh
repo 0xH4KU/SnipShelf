@@ -55,6 +55,12 @@ cat > "$APP_BUNDLE/Contents/Info.plist" <<'PLIST'
 <key>LSUIElement</key><true/>
 <key>NSHighResolutionCapable</key><true/>
 <key>NSHumanReadableCopyright</key><string>Copyright © 2026 SnipShelf contributors. MIT License.</string>
+<key>UTExportedTypeDeclarations</key><array><dict>
+<key>UTTypeIdentifier</key><string>org.snipshelf.backup</string>
+<key>UTTypeDescription</key><string>SnipShelf Library Backup</string>
+<key>UTTypeConformsTo</key><array><string>com.apple.package</string></array>
+<key>UTTypeTagSpecification</key><dict><key>public.filename-extension</key><array><string>snipshelfbackup</string></array></dict>
+</dict></array>
 <key>CFBundleDocumentTypes</key><array><dict>
 <key>CFBundleTypeName</key><string>Image</string>
 <key>CFBundleTypeRole</key><string>Viewer</string>
