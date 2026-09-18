@@ -2,9 +2,144 @@ import XCTest
 import AppKit
 import SwiftUI
 import UniformTypeIdentifiers
+import Carbon
 @testable import SnipShelf
 
 final class InteractionTests: XCTestCase {
+    @MainActor func testIndependentCaptureShortcutsPreserveBindingsAndUnfinishedSelections() async throws {
+        _ = NSApplication.shared
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let suite = "org.snipshelf.tests." + UUID().uuidString
+        let preferences = UserDefaults(suiteName: suite)!
+        preferences.set("Existing capture", forKey: "shortcutLabel")
+        preferences.set("Existing references", forKey: "referenceShortcutLabel")
+        let app = AppController(store: ShelfStore(root: root), preferences: preferences)
+        app.installHotKeyHandler()
+        func pressHotKey(_ shortcut: AppShortcut) async throws {
+            var event: EventRef?
+            XCTAssertEqual(CreateEvent(nil, OSType(kEventClassKeyboard), UInt32(kEventHotKeyPressed),
+                                       GetCurrentEventTime(), EventAttributes(kEventAttributeNone), &event), noErr)
+            let hotKeyEvent = try XCTUnwrap(event)
+            defer { ReleaseEvent(hotKeyEvent) }
+            var identifier = EventHotKeyID(signature: 0x534E4950, id: shortcut.rawValue)
+            XCTAssertEqual(SetEventParameter(hotKeyEvent, EventParamName(kEventParamDirectObject), EventParamType(typeEventHotKeyID),
+                                            MemoryLayout<EventHotKeyID>.size, &identifier), noErr)
+            XCTAssertEqual(SendEventToEventTarget(hotKeyEvent, GetApplicationEventTarget()), noErr)
+            await Task.yield()
+        }
+        defer {
+            app.captureModel?.cancel()
+            try? FileManager.default.removeItem(at: root)
+            preferences.removePersistentDomain(forName: suite)
+        }
+        XCTAssertEqual(app.shortcutLabel, "Existing capture")
+        XCTAssertEqual(app.shortcutLabel(for: .references), "Existing references")
+        let flags = UInt32(controlKey | optionKey | shiftKey | cmdKey)
+        for (shortcut, code) in [(AppShortcut.lasso, kVK_F17), (.polygon, kVK_F18), (.rectangle, kVK_F19)] {
+            XCTAssertTrue(app.registerShortcut(code: UInt32(code), modifiers: flags, label: "Test \(shortcut.title)", for: shortcut))
+        }
+        let original = app.shortcutBinding(for: .lasso)
+        let occupied = app.shortcutBinding(for: .polygon)
+        XCTAssertFalse(app.registerShortcut(code: occupied.code, modifiers: occupied.modifiers, label: occupied.label, for: .lasso))
+        XCTAssertEqual(app.shortcutBinding(for: .lasso).code, original.code)
+        XCTAssertEqual(app.shortcutLabel(for: .lasso), original.label)
+        XCTAssertTrue(try XCTUnwrap(app.shortcutError).contains("Polygon"))
+
+        var outsideKey: EventHotKeyRef?
+        XCTAssertEqual(RegisterEventHotKey(UInt32(kVK_F20), flags, EventHotKeyID(signature: 0x54455354, id: 1),
+                                          GetApplicationEventTarget(), 0, &outsideKey), noErr)
+        defer { if let outsideKey { UnregisterEventHotKey(outsideKey) } }
+        XCTAssertFalse(app.registerShortcut(code: UInt32(kVK_F20), modifiers: flags, label: "Occupied", for: .lasso))
+        XCTAssertEqual(app.shortcutBinding(for: .lasso).code, original.code)
+        // The previous native registration must still own its key after either kind of conflict.
+        var duplicate: EventHotKeyRef?
+        XCTAssertNotEqual(RegisterEventHotKey(original.code, flags, EventHotKeyID(signature: 0x54455354, id: 2),
+                                             GetApplicationEventTarget(), 0, &duplicate), noErr)
+        if let duplicate { UnregisterEventHotKey(duplicate) }
+
+        let image = try SnipShelfTests().image(width: 100, height: 100)
+        app.presentCanvas(image: image, frame: CGRect(x: 100, y: 100, width: 640, height: 480),
+                          screenCapture: false, name: "Shortcut test", mode: .rectangle)
+        let model = try XCTUnwrap(app.captureModel)
+        XCTAssertEqual(model.mode, .rectangle)
+        XCTAssertFalse(model.subjectMaskEnabled)
+        for shortcut in [AppShortcut.polygon, .rectangle, .lasso] {
+            try await pressHotKey(shortcut)
+            XCTAssertTrue(app.captureModel === model)
+            XCTAssertEqual(model.mode, shortcut.mode)
+            XCTAssertEqual(preferences.string(forKey: "selectionMode"), shortcut.mode?.rawValue)
+        }
+        app.performShortcut(.capture)
+        XCTAssertEqual(model.mode, .lasso, "The original capture shortcut uses the last tool")
+        model.selecting = true
+        app.performShortcut(.rectangle)
+        XCTAssertEqual(model.mode, .lasso, "A hotkey must not change a tool mid-stroke")
+        model.selecting = false; model.subjectMaskEnabled = false
+        try model.prepareReview(points: SnipShelfTests().rect(10, 10, 60, 60))
+        let bytes = try ImageCore.png(XCTUnwrap(model.reviewImage))
+        app.performShortcut(.polygon)
+        XCTAssertEqual(model.mode, .lasso)
+        XCTAssertEqual(try ImageCore.png(XCTUnwrap(model.reviewImage)), bytes)
+        XCTAssertTrue(app.store.clips.isEmpty)
+
+        let recorder = ShortcutRecorder.RecorderView(app: app, shortcut: .lasso)
+        let window = ShelfPanel(contentRect: CGRect(x: 100, y: 100, width: 220, height: 60), styleMask: .titled, backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false; window.contentView = recorder
+        defer { window.close() }
+        XCTAssertTrue(recorder.accessibilityPerformPress())
+        recorder.recordRegisteredShortcut(.polygon)
+        XCTAssertFalse(recorder.recording)
+        XCTAssertTrue(try XCTUnwrap(app.shortcutError).contains("Polygon"))
+        XCTAssertEqual(recorder.title, original.label)
+        XCTAssertTrue(recorder.accessibilityPerformPress())
+        recorder.recordRegisteredShortcut(.lasso)
+        XCTAssertFalse(recorder.recording)
+        XCTAssertNil(app.shortcutError, "Recording the existing binding is allowed")
+        let reloaded = AppController(store: app.store, preferences: preferences)
+        XCTAssertEqual(reloaded.shortcutLabel(for: .lasso), original.label)
+        XCTAssertEqual(reloaded.shortcutBinding(for: .polygon).code, occupied.code)
+        XCTAssertEqual(reloaded.shortcutLabel, "Existing capture")
+    }
+
+    @MainActor func testShortcutRecorderAcceptsSingleKeysAndAnyModifiers() throws {
+        _ = NSApplication.shared
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let suite = "org.snipshelf.tests." + UUID().uuidString
+        let preferences = UserDefaults(suiteName: suite)!
+        let app = AppController(store: ShelfStore(root: root), preferences: preferences)
+        let recorder = ShortcutRecorder.RecorderView(app: app, shortcut: .lasso)
+        defer { try? FileManager.default.removeItem(at: root); preferences.removePersistentDomain(forName: suite) }
+        func key(_ code: Int, _ flags: NSEvent.ModifierFlags, _ characters: String) throws -> NSEvent {
+            try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: flags, timestamp: 0,
+                windowNumber: 0, context: nil, characters: characters, charactersIgnoringModifiers: characters,
+                isARepeat: false, keyCode: UInt16(code)))
+        }
+        let cases: [(Int, NSEvent.ModifierFlags, String, UInt32, String)] = [
+            (kVK_ANSI_L, [], "l", 0, "L"),
+            (kVK_ANSI_L, .option, "l", UInt32(optionKey), "⌥L"),
+            (kVK_ANSI_P, .shift, "p", UInt32(shiftKey), "⇧P"),
+            (kVK_F18, .function, "", 0, "F18"),
+            (kVK_F18, [.option, .shift, .function], "", UInt32(optionKey | shiftKey), "⌥⇧F18"),
+            (kVK_Escape, .option, "\u{1b}", UInt32(optionKey), "⌥Esc")
+        ]
+        for (code, flags, characters, modifiers, label) in cases {
+            XCTAssertTrue(recorder.accessibilityPerformPress())
+            XCTAssertTrue(recorder.performKeyEquivalent(with: try key(code, flags, characters)))
+            XCTAssertFalse(recorder.recording)
+            XCTAssertNil(app.shortcutError, label)
+            let saved = app.shortcutBinding(for: .lasso)
+            XCTAssertEqual(saved.code, UInt32(code), label)
+            XCTAssertEqual(saved.modifiers, modifiers, label)
+            XCTAssertEqual(recorder.title, label)
+            XCTAssertEqual(recorder.accessibilityValue() as? String, label)
+        }
+        XCTAssertTrue(recorder.accessibilityPerformPress())
+        XCTAssertTrue(recorder.performKeyEquivalent(with: try key(kVK_Escape, [], "\u{1b}")))
+        XCTAssertFalse(recorder.recording)
+        XCTAssertEqual(recorder.title, "⌥Esc", "Plain Escape cancels without changing the saved binding")
+        XCTAssertEqual(app.shortcutBinding(for: .lasso).modifiers, UInt32(optionKey))
+    }
+
     @MainActor func testShortcutKeyboardActivationAndCopyFeedback() async throws {
         _ = NSApplication.shared
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
@@ -674,6 +809,8 @@ final class InteractionTests: XCTestCase {
             model.showCutout = false
             try await render(NSHostingView(rootView: CaptureReviewView(model: model, refine: {})), size: CGSize(width: 440, height: 540), name: "original-" + suffix, appearance: appearance)
             try await render(NSHostingView(rootView: CaptureReviewView(model: model, refine: {})), size: CGSize(width: 360, height: 440), name: "touch-up-small-" + suffix, appearance: appearance)
+            app.captureFolderID = folder.id
+            try await render(NSHostingView(rootView: CaptureReviewView(model: model, refine: {}, app: app)), size: CGSize(width: 360, height: 440), name: "capture-review-destination-" + suffix, appearance: appearance)
             store.searchText = "Study"
             try await render(NSHostingView(rootView: ShelfView(app: app)), size: CGSize(width: 340, height: 440), name: "search-" + suffix, appearance: appearance)
             try await render(NSHostingView(rootView: ShelfView(app: app)), size: CGSize(width: 700, height: 540), name: "search-wide-" + suffix, appearance: appearance)
@@ -683,6 +820,11 @@ final class InteractionTests: XCTestCase {
             try await render(NSHostingView(rootView: RecentlyDeletedView(app: app)), size: CGSize(width: 610, height: 400), name: "recently-deleted-" + suffix, appearance: appearance)
             store.undo()
             store.openFolder(nil)
+            let rectangle = CanvasModel(image: artwork, isScreen: false, complete: { _ in }, cancel: {})
+            rectangle.mode = .rectangle
+            try await render(NSHostingView(rootView: CaptureView(model: rectangle)), size: CGSize(width: 640, height: 420), name: "rectangle-toolbar-" + suffix, appearance: appearance)
+            try rectangle.prepareReview(points: SnipShelfTests().rect(100, 80, 650, 460))
+            try await render(NSHostingView(rootView: CaptureReviewView(model: rectangle, refine: {}, app: app)), size: CGSize(width: 360, height: 440), name: "capture-review-rectangle-" + suffix, appearance: appearance)
             for edge in ["left", "right"] {
                 app.shelf.snapEdge = edge
                 try await render(NSHostingView(rootView: ShelfView(app: app).background(Color(nsColor: .windowBackgroundColor))),

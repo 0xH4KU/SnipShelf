@@ -168,16 +168,25 @@ struct SettingsView: View {
     var body: some View {
         Form {
             Section("Capture") {
-                LabeledContent("Keyboard shortcut") {
-                    ShortcutRecorder(app: app).frame(width: 145, height: 32)
+                ForEach(AppShortcut.allCases.filter { $0 != .references }, id: \.self) { shortcut in
+                    LabeledContent(shortcut.title) {
+                        ShortcutRecorder(app: app, shortcut: shortcut).frame(width: 145, height: 32)
+                    }
                 }
-                Text("Click the shortcut to record. Include Command or Control.")
+                Text("Works from any app. Record a single key or any modifier combination. Esc cancels.")
                     .font(.caption).foregroundStyle(.secondary)
+                if let error = app.shortcutError { Text(error).font(.caption).foregroundStyle(.red) }
             }
             Section("Appearance") {
                 Picker("Preview background", selection: $app.backdrop) {
                     Text("Checkerboard").tag(0); Text("Light").tag(1); Text("Dark").tag(2)
                 }
+            }
+            Section("Reference Windows") {
+                LabeledContent("Show / hide all") {
+                    ShortcutRecorder(app: app, shortcut: .references).frame(width: 145, height: 32)
+                }
+                Text("Works while you are using another app.").font(.caption).foregroundStyle(.secondary)
             }
             Section("Storage") {
                 HStack {
@@ -199,23 +208,27 @@ struct SettingsView: View {
 }
 struct ShortcutRecorder: NSViewRepresentable {
     let app: AppController
-    func makeNSView(context: Context) -> RecorderView { RecorderView(app: app) }
-    func updateNSView(_ view: RecorderView, context: Context) { _ = app.shortcutLabel; view.updateTitle() }
+    var shortcut: AppShortcut = .capture
+    func makeNSView(context: Context) -> RecorderView { RecorderView(app: app, shortcut: shortcut) }
+    func updateNSView(_ view: RecorderView, context: Context) { _ = app.shortcutLabel(for: shortcut); view.updateTitle() }
     final class RecorderView: NSButton {
         let app: AppController
+        let shortcut: AppShortcut
         var recording = false
         override var acceptsFirstResponder: Bool { true }
-        init(app: AppController) {
-            self.app = app; super.init(frame: .zero)
+        init(app: AppController, shortcut: AppShortcut = .capture) {
+            self.app = app; self.shortcut = shortcut; super.init(frame: .zero)
             bezelStyle = .rounded
             target = self; action = #selector(beginRecording)
-            setAccessibilityLabel("Record capture shortcut")
+            setAccessibilityLabel("Record \(shortcut.title.lowercased()) shortcut")
             updateTitle()
         }
         required init?(coder: NSCoder) { fatalError() }
-        override func accessibilityValue() -> Any? { recording ? "Type a shortcut, or Escape to cancel" : app.shortcutLabel }
-        func updateTitle() { title = recording ? "Type shortcut…" : app.shortcutLabel }
+        private var label: String { app.shortcutLabel(for: shortcut) }
+        override func accessibilityValue() -> Any? { recording ? "Type a shortcut, or Escape to cancel" : label }
+        func updateTitle() { title = recording ? "Type shortcut…" : label }
         @objc private func beginRecording() {
+            app.shortcutError = nil
             window?.makeFirstResponder(self); recording = true; updateTitle()
         }
         override func accessibilityPerformPress() -> Bool { beginRecording(); return true }
@@ -226,9 +239,16 @@ struct ShortcutRecorder: NSViewRepresentable {
                 else { super.keyDown(with: event) }
                 return
             }
-            if event.keyCode != 53 { app.recordShortcut(event) }
-            recording = false; window?.makeFirstResponder(nil); updateTitle()
+            let cancel = event.keyCode == 53 && event.modifierFlags.intersection([.command, .control, .option, .shift]).isEmpty
+            if !cancel { app.recordShortcut(event, for: shortcut) }
+            finishRecording()
         }
+        func recordRegisteredShortcut(_ source: AppShortcut) {
+            let binding = app.shortcutBinding(for: source)
+            app.registerShortcut(code: binding.code, modifiers: binding.modifiers, label: binding.label, for: shortcut)
+            finishRecording()
+        }
+        private func finishRecording() { recording = false; window?.makeFirstResponder(nil); updateTitle() }
         override func performKeyEquivalent(with event: NSEvent) -> Bool {
             if recording { keyDown(with: event); return true }; return false
         }

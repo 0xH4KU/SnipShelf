@@ -4,7 +4,7 @@ import Observation
 
 @MainActor @Observable
 final class CanvasModel {
-    enum Mode: String, CaseIterable { case lasso = "Lasso", polygon = "Polygon" }
+    enum Mode: String, CaseIterable { case lasso = "Lasso", polygon = "Polygon", rectangle = "Rectangle" }
     enum MaskTool: String, CaseIterable {
         case view = "View", restore = "Restore", erase = "Erase"
         var shortcut: String {
@@ -13,7 +13,16 @@ final class CanvasModel {
     }
     let session: CaptureSession
     let isScreen: Bool
-    var mode: Mode = .lasso
+    var mode: Mode = .lasso {
+        didSet {
+            guard oldValue != mode else { return }
+            preferences?.set(mode.rawValue, forKey: "selectionMode")
+            subjectMaskEnabled = mode == .rectangle ? rectangleMaskEnabled : outlineMaskEnabled
+        }
+    }
+    private var outlineMaskEnabled = true
+    private var rectangleMaskEnabled = false
+    private(set) var continuingCapture = false
     var selecting = false
     var scale: CGFloat = 1
     var offset = CGPoint.zero
@@ -37,7 +46,9 @@ final class CanvasModel {
     var canUndo: Bool { !paintingMask && ((canTouchUp && canUndoMask) || previousOutline != nil) }
     var subjectMaskEnabled: Bool {
         didSet {
-            preferences?.set(subjectMaskEnabled, forKey: "visionCorrection")
+            if mode == .rectangle { rectangleMaskEnabled = subjectMaskEnabled }
+            else { outlineMaskEnabled = subjectMaskEnabled }
+            preferences?.set(subjectMaskEnabled, forKey: mode == .rectangle ? "rectangleRemoveBackground" : "visionCorrection")
             if !subjectMaskEnabled { leaveMaskEditing() }
             if reviewing { applyReviewChoice(); startCorrection() }
         }
@@ -54,7 +65,7 @@ final class CanvasModel {
     private var drawnReview: Outline?
     private var correctedReview: Outline?
     private var editedReview: CGImage?
-    private var previousReview: (drawn: Outline, corrected: Outline?, edited: CGImage?)?
+    private var previousReview: (drawn: Outline, corrected: Outline?, edited: CGImage?, mode: Mode, removeBackground: Bool)?
     var previousOutline: [CGPoint]? { previousReview?.drawn.points }
     private(set) var correcting = false
     private(set) var correctionError: String?
@@ -65,7 +76,7 @@ final class CanvasModel {
     var hasOutline: Bool { selecting || reviewing }
     var canConfirm: Bool { reviewing && !paintingMask && (!subjectMaskEnabled || !correcting) }
     var correctionStatus: String {
-        if !subjectMaskEnabled { return "Using your drawn outline" }
+        if !subjectMaskEnabled { return mode == .rectangle ? "Background kept inside your rectangle" : "Using your drawn outline" }
         if correcting { return "Finding the subject…" }
         if editedReview != nil { return "Subject mask with your touch-ups" }
         if let correctionError { return "Background removal failed: \(correctionError) · kept your selection" }
@@ -96,7 +107,12 @@ final class CanvasModel {
         smoothing = min(1, max(0, preferences?.object(forKey: "lassoSmoothing") as? Double ?? 0.55))
         snapEnabled = preferences?.object(forKey: "lassoSnap") as? Bool ?? true
         snapRadius = min(24, max(4, preferences?.object(forKey: "lassoSnapRadius") as? Double ?? 10))
-        subjectMaskEnabled = preferences?.object(forKey: "visionCorrection") as? Bool ?? true
+        let initialMode = preferences?.string(forKey: "selectionMode").flatMap(Mode.init(rawValue:)) ?? .lasso
+        mode = initialMode
+        let outlineMask = preferences?.object(forKey: "visionCorrection") as? Bool ?? true
+        let rectangleMask = preferences?.object(forKey: "rectangleRemoveBackground") as? Bool ?? false
+        outlineMaskEnabled = outlineMask; rectangleMaskEnabled = rectangleMask
+        subjectMaskEnabled = initialMode == .rectangle ? rectangleMask : outlineMask
         self.isScreen = isScreen; self.complete = complete; self.cancel = cancel
     }
     deinit { edgeTask?.cancel(); correctionTask?.cancel() }
@@ -108,7 +124,7 @@ final class CanvasModel {
         return task
     }
     func analyzeEdges() async {
-        guard edgeMap == nil else { return }
+        guard edgeMap == nil, mode != .rectangle else { return }
         do {
             let map = try await edgeDetection().value
             guard !Task.isCancelled else { return }
@@ -137,7 +153,7 @@ final class CanvasModel {
         reviewReady?()
     }
     private func checkpointReview() {
-        if let drawnReview { previousReview = (drawnReview, correctedReview, editedReview) }
+        if let drawnReview { previousReview = (drawnReview, correctedReview, editedReview, mode, subjectMaskEnabled) }
     }
     private func applyReviewChoice() {
         guard let drawnReview, !selecting else { return }
@@ -237,6 +253,7 @@ final class CanvasModel {
         if canTouchUp, maskUndo.canUndo { maskUndo.undo(); updateMaskUndo(); return }
         guard let previousReview else { return }
         stopCorrection(); clearMaskEdits()
+        mode = previousReview.mode; subjectMaskEnabled = previousReview.removeBackground
         drawnReview = previousReview.drawn; correctedReview = previousReview.corrected
         editedReview = previousReview.edited
         self.previousReview = nil; selecting = false; error = nil; restoreToken += 1
@@ -244,11 +261,13 @@ final class CanvasModel {
         applyReviewChoice(); startCorrection()
         reviewReady?()
     }
-    func confirm() {
+    func confirm(keepSelecting: Bool = false) {
         guard canConfirm, let image = reviewImage else { return }
         clearMaskEdits()
         stopCorrection(); drawnReview = nil; correctedReview = nil
         reviewImage = nil
+        previousReview = nil; selecting = false; resetToken += 1
+        continuingCapture = keepSelecting
         complete(image)
     }
     func fit() { scale = 1; actualSize = false; offset = .zero }
@@ -258,6 +277,7 @@ final class CanvasModel {
 struct CaptureReviewView: View {
     @Bindable var model: CanvasModel
     let refine: () -> Void
+    var app: AppController? = nil
     var body: some View {
         VStack(spacing: 0) {
             HStack(spacing: 8) {
@@ -280,31 +300,33 @@ struct CaptureReviewView: View {
             Divider()
             VStack(alignment: .leading, spacing: 10) {
                 SubjectMaskControl(model: model)
-                HStack(spacing: 6) {
-                    Picker("Touch-up tool", selection: $model.maskTool) {
-                        ForEach(CanvasModel.MaskTool.allCases, id: \.self) { Text("\($0.rawValue) (\($0.shortcut))").tag($0) }
-                    }.pickerStyle(.segmented).labelsHidden().disabled(!model.canTouchUp)
-                    Button("Undo", systemImage: "arrow.uturn.backward") { model.undoSelection() }
-                        .disabled(!model.canUndo).keyboardShortcut("z", modifiers: .command)
-                        .help("Undo last edit (⌘Z)")
-                    Button("Redo", systemImage: "arrow.uturn.forward") { model.redoMaskStroke() }
-                        .disabled(!model.canTouchUp || !model.canRedoMask).keyboardShortcut("z", modifiers: [.command, .shift])
-                        .help("Redo last stroke (⇧⌘Z)")
-                }.labelStyle(.titleOnly)
-                HStack(spacing: 10) {
-                    Text("Brush [ / ]")
-                    Slider(value: $model.brushSize, in: 1...128, step: 1).accessibilityLabel("Brush size")
-                        .help("[ makes the brush smaller; ] makes it larger")
-                    Text("\(Int(model.brushSize)) px").monospacedDigit().frame(width: 48, alignment: .trailing)
-                }.font(.caption).disabled(!model.editingMask)
-                HStack {
-                    Toggle("Show removed areas", isOn: $model.showRemovedAreas).toggleStyle(.checkbox)
-                        .disabled(model.showCutout || !model.canTouchUp)
-                    Spacer()
-                    if let image = model.reviewImage {
-                        Text("\(image.width) × \(image.height) px").foregroundStyle(.secondary).monospacedDigit()
-                    }
-                }.font(.caption)
+                if model.subjectMaskEnabled {
+                    HStack(spacing: 6) {
+                        Picker("Touch-up tool", selection: $model.maskTool) {
+                            ForEach(CanvasModel.MaskTool.allCases, id: \.self) { Text("\($0.rawValue) (\($0.shortcut))").tag($0) }
+                        }.pickerStyle(.segmented).labelsHidden().disabled(!model.canTouchUp)
+                        Button("Undo", systemImage: "arrow.uturn.backward") { model.undoSelection() }
+                            .disabled(!model.canUndo).keyboardShortcut("z", modifiers: .command)
+                            .help("Undo last edit (⌘Z)")
+                        Button("Redo", systemImage: "arrow.uturn.forward") { model.redoMaskStroke() }
+                            .disabled(!model.canTouchUp || !model.canRedoMask).keyboardShortcut("z", modifiers: [.command, .shift])
+                            .help("Redo last stroke (⇧⌘Z)")
+                    }.labelStyle(.titleOnly)
+                    HStack(spacing: 10) {
+                        Text("Brush [ / ]")
+                        Slider(value: $model.brushSize, in: 1...128, step: 1).accessibilityLabel("Brush size")
+                            .help("[ makes the brush smaller; ] makes it larger")
+                        Text("\(Int(model.brushSize)) px").monospacedDigit().frame(width: 48, alignment: .trailing)
+                    }.font(.caption).disabled(!model.editingMask)
+                    HStack {
+                        Toggle("Show removed areas", isOn: $model.showRemovedAreas).toggleStyle(.checkbox)
+                            .disabled(model.showCutout || !model.canTouchUp)
+                        Spacer()
+                        if let image = model.reviewImage {
+                            Text("\(image.width) × \(image.height) px").foregroundStyle(.secondary).monospacedDigit()
+                        }
+                    }.font(.caption)
+                }
                 VStack(alignment: .leading, spacing: 2) {
                     Text("⌘+ / ⌘− zoom · ⌘Z undo · ⇧⌘Z redo")
                     Text(model.editingMask ? "Space-drag pans · Esc leaves the brush" : "Drag to pan · Pinch to zoom")
@@ -312,9 +334,21 @@ struct CaptureReviewView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                 if let error = model.error { Text(error).font(.caption).foregroundStyle(.red).lineLimit(2).help(error) }
                 Divider()
+                if let app {
+                    @Bindable var app = app
+                    HStack {
+                        Picker("Save to", selection: $app.captureFolderID) {
+                            Text("Shelf").tag(nil as UUID?)
+                            ForEach(app.store.folders) { Text($0.name).tag(Optional($0.id)) }
+                        }.lineLimit(1)
+                        Button("Keep & Continue") { model.confirm(keepSelecting: true) }
+                            .disabled(!model.canConfirm).help("Save this clip and select another area of the same image (⌘Return)")
+                    }
+                }
                 HStack(spacing: 8) {
                     Button("Redraw") { refine(); model.reset() }.help("Draw a new selection on the same image")
-                    Button("Refine Outline", action: refine).help("Return to the original image to adjust the lasso")
+                    Button(model.mode == .rectangle ? "Adjust Rectangle" : "Refine Outline", action: refine)
+                        .help("Return to the original image to adjust the selection")
                     Spacer()
                     Button("Keep Clip") { model.confirm() }.buttonStyle(.borderedProminent)
                         .keyboardShortcut(.defaultAction).disabled(!model.canConfirm)
@@ -410,20 +444,20 @@ struct CaptureView: View {
                     ZStack(alignment: .top) {
                         SelectionCanvas(model: model)
                         VStack(spacing: 10) {
-                            HStack(spacing: 14) {
+                            HStack(spacing: 10) {
                                 if !model.reviewing {
                                     Image(systemName: "line.3.horizontal").foregroundStyle(.secondary)
                                         .frame(width: 24, height: 28).contentShape(Rectangle())
                                         .accessibilityLabel("Move selection toolbar")
                                         .help("Drag to move the toolbar")
                                         .gesture(DragGesture(coordinateSpace: .named("captureCanvas")).onChanged { value in
-                                            let limitX = max(0, (geometry.size.width - 600) / 2)
+                                            let limitX = max(0, (geometry.size.width - 640) / 2)
                                             toolbarOffset = CGSize(width: min(limitX, max(-limitX, toolbarStart.width + value.translation.width)),
                                                                    height: min(max(0, geometry.size.height - 200), max(0, toolbarStart.height + value.translation.height)))
                                         }.onEnded { _ in toolbarStart = toolbarOffset })
                                     Picker("Selection", selection: $model.mode) {
                                         ForEach(CanvasModel.Mode.allCases, id: \.self) { Text($0.rawValue).tag($0) }
-                                    }.pickerStyle(.segmented).labelsHidden().frame(width: 160).disabled(model.selecting)
+                                    }.pickerStyle(.segmented).labelsHidden().frame(width: 232).disabled(model.selecting)
                                     Button { showAssist.toggle() } label: { Image(systemName: "wand.and.stars") }
                                         .help("Selection assistance").accessibilityLabel("Selection assistance")
                                         .disabled(model.selecting).popover(isPresented: $showAssist) {
@@ -465,11 +499,12 @@ struct CaptureView: View {
                     }
                 }
             }.coordinateSpace(name: "captureCanvas")
-                .task { await model.analyzeEdges() }
+                .task(id: model.mode) { await model.analyzeEdges() }
         }
     }
     private var hint: String {
         if let error = model.error { return error }
+        if model.mode == .rectangle { return "Drag a rectangle · Release to review · \(model.subjectMaskEnabled ? "Remove Background is on" : "Background is kept")" }
         if model.previousOutline != nil && model.selecting { return "Retrace or redraw · ⌘Z restores the previous outline" }
         return model.mode == .lasso
             ? (model.subjectMaskEnabled ? "Draw around the subject · Release to remove background · ⌥ bypasses edge help"
@@ -501,6 +536,7 @@ struct SelectionAssistanceView: View {
                 ForEach(CanvasModel.Mode.allCases, id: \.self) { Text($0.rawValue).tag($0) }
             }.pickerStyle(.segmented).disabled(model.hasOutline)
             Toggle(model.mode == .lasso ? "Gentle edge help" : "Snap to edges", isOn: $model.snapEnabled)
+                .disabled(model.mode == .rectangle)
             if model.mode == .polygon {
                 VStack(alignment: .leading, spacing: 6) {
                     HStack { Text("Snap distance"); Spacer(); Text("\(Int(model.snapRadius)) pt").foregroundStyle(.secondary) }
@@ -510,7 +546,7 @@ struct SelectionAssistanceView: View {
             VStack(alignment: .leading, spacing: 6) {
                 HStack { Text("Steadiness"); Spacer(); Text(model.smoothing == 0 ? "Off" : "\(Int(model.smoothing * 100))%").foregroundStyle(.secondary) }
                 Slider(value: $model.smoothing, in: 0...1).accessibilityLabel("Steadiness")
-            }
+            }.disabled(model.mode == .rectangle)
             Text(model.mode == .lasso ? "Hold Option to bypass edge help. Steadiness stays on." : "Tab switches nearby edges. Option bypasses snapping.")
                 .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
         }
@@ -559,6 +595,7 @@ final class CanvasNSView: NSView {
     private var removalPreviewFor: CGImage?
     private var continuing = false
     private var draggingLasso = false
+    private var rectangleStart: CGPoint?
     private var fluidStroke = false
     private var alternatives: [ContourMap.Hit] = []
     private var alternativeIndex = 0
@@ -600,7 +637,7 @@ final class CanvasNSView: NSView {
             window?.makeFirstResponder(self)
         }
         window?.invalidateCursorRects(for: self)
-        if !model.snapEnabled { previousHit = nil; snappedPoint = nil; alternatives = []; lastPointer = nil }
+        if !model.snapEnabled || model.mode == .rectangle { previousHit = nil; snappedPoint = nil; alternatives = []; lastPointer = nil }
         if seenResume != model.resumeToken {
             seenResume = model.resumeToken; continuing = true; draggingLasso = false; lastPointer = nil
             fluidStroke = model.fluidDrawing
@@ -609,7 +646,7 @@ final class CanvasNSView: NSView {
             strokeEdges = model.edgeMap
             window?.makeFirstResponder(self)
         }
-        if seenReset != model.resetToken { points.removeAll(); lastPointer = nil; alternatives = []; continuing = false; draggingLasso = false; hover = nil; previousHit = nil; snappedPoint = nil; stabilizer.reset(); seenReset = model.resetToken }
+        if seenReset != model.resetToken { points.removeAll(); rectangleStart = nil; lastPointer = nil; alternatives = []; continuing = false; draggingLasso = false; hover = nil; previousHit = nil; snappedPoint = nil; stabilizer.reset(); seenReset = model.resetToken }
         if seenRestore != model.restoreToken {
             seenRestore = model.restoreToken; points = model.reviewPoints
             continuing = false; draggingLasso = false; hover = nil
@@ -716,7 +753,7 @@ final class CanvasNSView: NSView {
             path.move(to: canvasPoint(first))
             for p in points.dropFirst() { path.line(to: canvasPoint(p)) }
             if model.mode == .polygon, !model.reviewing, let hover { path.line(to: canvasPoint(hover)) }
-            if model.reviewing { path.close() }
+            if model.reviewing || model.mode == .rectangle { path.close() }
         }
         let shade = NSBezierPath(rect: bounds)
         if !model.reviewing, points.count > 2 { let fill = path.copy() as! NSBezierPath; fill.close(); shade.append(fill) }
@@ -734,14 +771,14 @@ final class CanvasNSView: NSView {
             path.lineJoinStyle = .round; path.lineCapStyle = .round
             NSColor.black.withAlphaComponent(0.55).setStroke(); path.lineWidth = 3; path.stroke()
             NSColor.white.setStroke(); path.lineWidth = 1.4; path.stroke()
-            if !model.reviewing, let first = points.first, let last = points.last, points.count > 2 {
+            if !model.reviewing, model.mode != .rectangle, let first = points.first, let last = points.last, points.count > 2 {
                 let connector = NSBezierPath()
                 connector.move(to: canvasPoint(model.mode == .polygon ? (hover ?? last) : last))
                 connector.line(to: canvasPoint(first))
                 connector.setLineDash([4, 4], count: 2, phase: 0)
                 NSColor.white.withAlphaComponent(0.45).setStroke(); connector.lineWidth = 1; connector.stroke()
             }
-            if let first = points.first {
+            if model.mode != .rectangle, let first = points.first {
                 let p = canvasPoint(first)
                 let closing = canCloseLasso
                 let radius: CGFloat = closing ? 7 : 4
@@ -870,6 +907,12 @@ final class CanvasNSView: NSView {
         guard !reviewOnly else { return }
         guard imageRect.contains(convert(event.locationInWindow, from: nil)) else { return }
         model.error = nil
+        if model.mode == .rectangle {
+            let start = pixelPoint(event)
+            rectangleStart = start; points = [start]; model.selecting = true
+            continuing = false; snappedPoint = nil; hover = nil; needsDisplay = true
+            return
+        }
         optionDown = event.modifierFlags.contains(.option)
         if !model.selecting || (model.mode == .lasso && !continuing) {
             stabilizer.reset()
@@ -905,6 +948,7 @@ final class CanvasNSView: NSView {
             hover = model.session.pixelPoint(convert(event.locationInWindow, from: nil), in: imageRect)
             model.paintMaskStroke(to: hover!); refresh(); return
         }
+        if rectangleStart != nil { updateRectangle(to: pixelPoint(event)); return }
         guard draggingLasso, model.selecting else { return }
         appendLasso(event)
     }
@@ -915,6 +959,9 @@ final class CanvasNSView: NSView {
         if model.paintingMask {
             hover = model.session.pixelPoint(convert(event.locationInWindow, from: nil), in: imageRect)
             model.paintMaskStroke(to: hover!); model.endMaskStroke(); refresh(); return
+        }
+        if rectangleStart != nil {
+            updateRectangle(to: pixelPoint(event)); rectangleStart = nil; finish(); return
         }
         if draggingLasso, model.selecting {
             appendLasso(event)
@@ -932,6 +979,7 @@ final class CanvasNSView: NSView {
                 ? model.session.pixelPoint(convert(event.locationInWindow, from: nil), in: imageRect) : nil
             needsDisplay = true; return
         }
+        if model.mode == .rectangle { return }
         let oldSnap = snappedPoint
         hover = pixelPoint(event)
         if !model.selecting, model.snapEnabled, !event.modifierFlags.contains(.option) {
@@ -971,6 +1019,10 @@ final class CanvasNSView: NSView {
             }
         }
         if event.modifierFlags.contains(.command) {
+            if event.keyCode == 36 || event.keyCode == 76 {
+                if model.reviewing { model.confirm(keepSelecting: true) }
+                refresh(); return true
+            }
             switch key {
             case "z":
                 if event.modifierFlags.contains(.shift) { model.redoMaskStroke() } else { model.undoSelection() }
@@ -1056,5 +1108,14 @@ final class CanvasNSView: NSView {
     private func finish() {
         do { try model.prepareReview(points: points); snappedPoint = nil; hover = nil; needsDisplay = true }
         catch { model.error = error.localizedDescription; points.removeAll(); previousHit = nil; snappedPoint = nil; alternatives = []; lastPointer = nil; stabilizer.reset(); model.selecting = false; needsDisplay = true }
+    }
+
+    private func updateRectangle(to point: CGPoint) {
+        guard let start = rectangleStart else { return }
+        let minX = floor(min(start.x, point.x)), minY = floor(min(start.y, point.y))
+        let maxX = ceil(max(start.x, point.x)), maxY = ceil(max(start.y, point.y))
+        points = [CGPoint(x: minX, y: minY), CGPoint(x: maxX, y: minY),
+                  CGPoint(x: maxX, y: maxY), CGPoint(x: minX, y: maxY)]
+        needsDisplay = true
     }
 }

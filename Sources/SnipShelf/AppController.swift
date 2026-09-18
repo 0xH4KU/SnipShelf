@@ -6,6 +6,36 @@ import UniformTypeIdentifiers
 import Observation
 import Darwin
 
+enum AppShortcut: UInt32, CaseIterable {
+    case capture = 1, references, lasso, polygon, rectangle
+
+    var mode: CanvasModel.Mode? {
+        switch self {
+        case .lasso: .lasso
+        case .polygon: .polygon
+        case .rectangle: .rectangle
+        default: nil
+        }
+    }
+    var title: String { mode?.rawValue ?? (self == .capture ? "Last used tool" : "Show / hide references") }
+    var preferenceKey: String {
+        switch self {
+        case .capture: "shortcut"
+        case .references: "referenceShortcut"
+        default: title.lowercased() + "Shortcut"
+        }
+    }
+    var defaultBinding: (code: UInt32, modifiers: UInt32, label: String) {
+        switch self {
+        case .capture: (UInt32(kVK_ANSI_2), UInt32(cmdKey | shiftKey), "⌘⇧2")
+        case .references: (UInt32(kVK_ANSI_R), UInt32(controlKey | optionKey | cmdKey), "⌃⌥⌘R")
+        case .lasso: (UInt32(kVK_ANSI_1), UInt32(controlKey | cmdKey), "⌃⌘1")
+        case .polygon: (UInt32(kVK_ANSI_2), UInt32(controlKey | cmdKey), "⌃⌘2")
+        case .rectangle: (UInt32(kVK_ANSI_3), UInt32(controlKey | cmdKey), "⌃⌘3")
+        }
+    }
+}
+
 @main
 struct SnipShelfMain {
     @MainActor static func main() {
@@ -33,8 +63,11 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
     var isDraggingClips = false
     var draggedClipIDs: Set<UUID> = []
     var backdrop: Int { didSet { defaults.set(backdrop, forKey: "backdrop") } }
-    var shortcutLabel: String
+    private(set) var shortcutLabels: [AppShortcut: String] = [:]
+    var shortcutLabel: String { shortcutLabel(for: .capture) }
+    var shortcutError: String?
     var searchFocusRequest = 0
+    var captureFolderID: UUID?
     @ObservationIgnored var shelfColumns = 2
     private var previewID: UUID?
     var previewClip: Clip? {
@@ -46,7 +79,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
     var status: String?
     private(set) var copiedClipID: UUID?
     @ObservationIgnored private var statusItem: NSStatusItem!
-    @ObservationIgnored private var hotKey: EventHotKeyRef?
+    @ObservationIgnored private var hotKeys: [AppShortcut: EventHotKeyRef] = [:]
     @ObservationIgnored private var hotKeyHandler: EventHandlerRef?
     @ObservationIgnored private var captureWindow: NSWindow?
     @ObservationIgnored private(set) var captureModel: CanvasModel?
@@ -70,10 +103,15 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
         self.store = store ?? ShelfStore(root: qaRoot)
         shelf = ShelfWindow(defaults: defaults)
         backdrop = defaults.integer(forKey: "backdrop")
-        shortcutLabel = defaults.string(forKey: "shortcutLabel") ?? "⌘⇧2"
         super.init()
+        for shortcut in AppShortcut.allCases { shortcutLabels[shortcut] = shortcutBinding(for: shortcut).label }
         observeReferenceChanges()
         NotificationCenter.default.addObserver(self, selector: #selector(recoverReferenceWindows), name: NSApplication.didChangeScreenParametersNotification, object: nil)
+    }
+
+    deinit {
+        for key in hotKeys.values { UnregisterEventHotKey(key) }
+        if let hotKeyHandler { RemoveEventHandler(hotKeyHandler) }
     }
 
     static func menuBarIcon() -> NSImage {
@@ -127,6 +165,11 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
         statusItem.button?.toolTip = "SnipShelf"
         let menu = NSMenu()
         menu.addItem(actionItem("Capture Element", action: #selector(captureAction)))
+        for shortcut in AppShortcut.allCases where shortcut.mode != nil {
+            let item = actionItem("Capture \(shortcut.title)", action: #selector(captureToolAction(_:)))
+            item.tag = Int(shortcut.rawValue)
+            menu.addItem(item)
+        }
         menu.addItem(actionItem("Show Shelf", action: #selector(showAction)))
         menu.addItem(actionItem("Show/Hide References", action: #selector(toggleReferences)))
         menu.addItem(actionItem("Import Images…", action: #selector(importAction)))
@@ -139,9 +182,14 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
         lastExternalApp = NSWorkspace.shared.frontmostApplication
         NSWorkspace.shared.notificationCenter.addObserver(self, selector: #selector(activatedApp(_:)), name: NSWorkspace.didActivateApplicationNotification, object: nil)
         installHotKeyHandler()
-        let code = defaults.object(forKey: "shortcutCode") as? UInt32 ?? UInt32(kVK_ANSI_2)
-        let modifiers = defaults.object(forKey: "shortcutModifiers") as? UInt32 ?? UInt32(cmdKey | shiftKey)
-        registerShortcut(code: code, modifiers: modifiers, label: shortcutLabel)
+        var registrationError: String?
+        for shortcut in AppShortcut.allCases {
+            let binding = shortcutBinding(for: shortcut)
+            if !registerShortcut(code: binding.code, modifiers: binding.modifiers, label: binding.label, for: shortcut) {
+                registrationError = shortcutError
+            }
+        }
+        shortcutError = registrationError
     }
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         if store.transferringLibrary {
@@ -181,6 +229,10 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
         previousApp = front?.processIdentifier == ProcessInfo.processInfo.processIdentifier ? lastExternalApp : front
     }
     @objc func captureAction() { capture() }
+    @objc private func captureToolAction(_ sender: NSMenuItem) {
+        guard let mode = AppShortcut(rawValue: UInt32(sender.tag))?.mode else { return }
+        capture(mode: mode)
+    }
     @objc func showAction() { shelf.expand(); shelf.panel.makeKeyAndOrderFront(nil) }
     @objc func importAction() { chooseImages() }
     @objc func settingsAction() { showSettings() }
@@ -307,7 +359,9 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
         return !busy && !store.transferringLibrary
     }
-    func capture() {
+    func capture() { capture(mode: nil) }
+    func capture(mode: CanvasModel.Mode?) {
+        if let mode, let model = captureModel, !model.hasOutline { model.mode = mode }
         guard readyForNewImage(), !store.isReadOnly else { return }
         rememberFocus()
         guard CGPreflightScreenCaptureAccess() else {
@@ -341,7 +395,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 guard NSScreen.screens.contains(where: { ($0.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value == screenNumber.uint32Value }) else {
                     throw ShelfError("The display was disconnected. Try Capture on another screen.")
                 }
-                presentCanvas(image: image, frame: frame, screenCapture: true, name: "Clip \(Date().formatted(date: .omitted, time: .shortened))")
+                presentCanvas(image: image, frame: frame, screenCapture: true, name: "Clip \(Date().formatted(date: .omitted, time: .shortened))", mode: mode)
             } catch { restoreFocus(); store.message = "Capture failed. \(error.localizedDescription)" }
         }
     }
@@ -357,13 +411,18 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
                           screenCapture: false, name: "\(clip.name) — crop")
         } catch { store.message = error.localizedDescription }
     }
-    func presentCanvas(image: CGImage, frame: CGRect, screenCapture: Bool, name: String) {
-        let folderID = store.currentFolderID
+    func presentCanvas(image: CGImage, frame: CGRect, screenCapture: Bool, name: String, mode: CanvasModel.Mode? = nil) {
+        captureFolderID = store.currentFolderID
         let model = CanvasModel(image: image, isScreen: screenCapture, preferences: defaults, complete: { [weak self] output in
             guard let self else { return }
-            self.dismissCanvas()
-            self.store.receive(output, name: name, folderID: folderID)
+            let keepSelecting = self.captureModel?.continuingCapture == true
+            self.store.receive(output, name: name, folderID: self.captureFolderID)
+            if keepSelecting && self.store.pendingImage == nil {
+                self.captureReviewWindow?.orderOut(nil)
+                self.captureWindow?.makeKeyAndOrderFront(nil)
+            } else { self.dismissCanvas() }
         }, cancel: { [weak self] in self?.dismissCanvas() })
+        if let mode { model.mode = mode }
         let style: NSWindow.StyleMask = screenCapture ? [.borderless] : [.titled, .resizable]
         let window = ShelfPanel(contentRect: frame, styleMask: style, backing: .buffered, defer: false)
         window.title = "Crop a Copy"
@@ -411,7 +470,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
         panel.delegate = self
         panel.contentView = NSHostingView(rootView: CaptureReviewView(model: model, refine: { [weak self] in
             self?.refineCapture()
-        }))
+        }, app: self))
         // Return and Escape also work before SwiftUI mounts the canvas.
         panel.onKey = { [weak model] event in
             guard event.modifierFlags.intersection([.command, .control, .option, .shift]).isEmpty else { return false }
@@ -683,37 +742,85 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
     func windowDidMove(_ notification: Notification) { persistReferenceFrame(notification) }
     func windowDidResize(_ notification: Notification) { persistReferenceFrame(notification) }
 
-    private func installHotKeyHandler() {
+    func installHotKeyHandler() {
         var type = EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))
-        InstallEventHandler(GetApplicationEventTarget(), { _, _, context in
-            guard let context else { return OSStatus(eventNotHandledErr) }
+        InstallEventHandler(GetApplicationEventTarget(), { _, event, context in
+            guard let context, let event else { return OSStatus(eventNotHandledErr) }
+            var id = EventHotKeyID()
+            guard GetEventParameter(event, EventParamName(kEventParamDirectObject), EventParamType(typeEventHotKeyID), nil,
+                                    MemoryLayout<EventHotKeyID>.size, nil, &id) == noErr else { return OSStatus(eventNotHandledErr) }
+            guard id.signature == 0x534E4950, let shortcut = AppShortcut(rawValue: id.id) else { return OSStatus(eventNotHandledErr) }
             let app = Unmanaged<AppController>.fromOpaque(context).takeUnretainedValue()
-            Task { @MainActor in app.capture() }
+            Task { @MainActor in app.performShortcut(shortcut) }
             return noErr
         }, 1, &type, Unmanaged.passUnretained(self).toOpaque(), &hotKeyHandler)
     }
-    func recordShortcut(_ event: NSEvent) {
-        guard event.modifierFlags.contains(.command) || event.modifierFlags.contains(.control) else {
-            store.message = "Include Command or Control in your shortcut."; return
-        }
+    func performShortcut(_ shortcut: AppShortcut) {
+        if let recorder = NSApp.keyWindow?.firstResponder as? ShortcutRecorder.RecorderView,
+           recorder.app === self, recorder.recording {
+            recorder.recordRegisteredShortcut(shortcut)
+        } else if shortcut == .references { toggleReferences() }
+        else { capture(mode: shortcut.mode) }
+    }
+    func shortcutLabel(for shortcut: AppShortcut) -> String {
+        shortcutLabels[shortcut] ?? shortcut.defaultBinding.label
+    }
+    func shortcutBinding(for shortcut: AppShortcut) -> (code: UInt32, modifiers: UInt32, label: String) {
+        let prefix = shortcut.preferenceKey, fallback = shortcut.defaultBinding
+        return (defaults.object(forKey: prefix + "Code") as? UInt32 ?? fallback.code,
+                defaults.object(forKey: prefix + "Modifiers") as? UInt32 ?? fallback.modifiers,
+                defaults.string(forKey: prefix + "Label") ?? fallback.label)
+    }
+    func recordShortcut(_ event: NSEvent, for shortcut: AppShortcut = .capture) {
         var modifiers: UInt32 = 0
         var label = ""
         for (flag, carbon, symbol): (NSEvent.ModifierFlags, Int, String) in [(.control, controlKey, "⌃"), (.option, optionKey, "⌥"), (.shift, shiftKey, "⇧"), (.command, cmdKey, "⌘")] {
             if event.modifierFlags.contains(flag) { modifiers |= UInt32(carbon); label += symbol }
         }
-        label += event.characters(byApplyingModifiers: [])?.uppercased() ?? "Key \(event.keyCode)"
-        registerShortcut(code: UInt32(event.keyCode), modifiers: modifiers, label: label)
-    }
-    private func registerShortcut(code: UInt32, modifiers: UInt32, label: String) {
-        if let hotKey { UnregisterEventHotKey(hotKey); self.hotKey = nil }
-        let result = RegisterEventHotKey(code, modifiers, EventHotKeyID(signature: 0x534E4950, id: 1), GetApplicationEventTarget(), 0, &hotKey)
-        guard result == noErr else {
-            shortcutLabel = "Unavailable — choose another"
-            store.message = "That shortcut could not be registered (\(result)). Choose another in Settings. Capture is still available in the menu bar."
-            return
+        let keyCode = Int(event.keyCode)
+        let keyNames = [kVK_Space: "Space", kVK_Return: "Return", kVK_ANSI_KeypadEnter: "Enter", kVK_Tab: "Tab",
+                        kVK_Escape: "Esc", kVK_Delete: "⌫", kVK_ForwardDelete: "⌦",
+                        kVK_LeftArrow: "←", kVK_RightArrow: "→", kVK_UpArrow: "↑", kVK_DownArrow: "↓",
+                        kVK_Home: "Home", kVK_End: "End", kVK_PageUp: "Page Up", kVK_PageDown: "Page Down"]
+        let functionKeys = [kVK_F1, kVK_F2, kVK_F3, kVK_F4, kVK_F5, kVK_F6, kVK_F7, kVK_F8, kVK_F9, kVK_F10,
+                            kVK_F11, kVK_F12, kVK_F13, kVK_F14, kVK_F15, kVK_F16, kVK_F17, kVK_F18, kVK_F19, kVK_F20]
+        if let name = keyNames[keyCode] { label += name }
+        else if let index = functionKeys.firstIndex(of: keyCode) { label += "F\(index + 1)" }
+        else {
+            let characters = event.characters(byApplyingModifiers: []) ?? ""
+            label += characters.isEmpty ? "Key \(event.keyCode)" : characters.uppercased()
         }
-        defaults.set(code, forKey: "shortcutCode"); defaults.set(modifiers, forKey: "shortcutModifiers")
-        defaults.set(label, forKey: "shortcutLabel"); shortcutLabel = label
+        registerShortcut(code: UInt32(event.keyCode), modifiers: modifiers, label: label, for: shortcut)
+    }
+    @discardableResult func registerShortcut(code: UInt32, modifiers: UInt32, label: String, for shortcut: AppShortcut) -> Bool {
+        if hotKeys[shortcut] != nil {
+            let current = shortcutBinding(for: shortcut)
+            if current.code == code && current.modifiers == modifiers { shortcutError = nil; return true }
+        }
+        if let conflict = hotKeys.keys.first(where: {
+            let binding = shortcutBinding(for: $0)
+            return $0 != shortcut && binding.code == code && binding.modifiers == modifiers
+        }) {
+            shortcutError = "\(label) is already used by \(conflict.title). Choose a different shortcut for \(shortcut.title)."
+            if hotKeys[shortcut] == nil { shortcutLabels[shortcut] = "Unavailable" }
+            return false
+        }
+        var registered: EventHotKeyRef?
+        let result = RegisterEventHotKey(code, modifiers, EventHotKeyID(signature: 0x534E4950, id: shortcut.rawValue), GetApplicationEventTarget(), 0, &registered)
+        guard result == noErr else {
+            shortcutError = "\(label) could not be registered (\(result)). Choose another shortcut for \(shortcut.title)."
+            if hotKeys[shortcut] == nil { shortcutLabels[shortcut] = "Unavailable" }
+            store.message = shortcutError
+            return false
+        }
+        if let previous = hotKeys[shortcut] { UnregisterEventHotKey(previous) }
+        hotKeys[shortcut] = registered
+        let prefix = shortcut.preferenceKey
+        defaults.set(code, forKey: prefix + "Code"); defaults.set(modifiers, forKey: prefix + "Modifiers")
+        defaults.set(label, forKey: prefix + "Label")
+        shortcutLabels[shortcut] = label
+        shortcutError = nil
+        return true
     }
     func showSettings() {
         if settingsWindow == nil { settingsWindow = utilityWindow(title: "SnipShelf Settings", size: CGSize(width: 500, height: min(720, shelf.screen.visibleFrame.height - 40)), content: SettingsView(app: self)) }

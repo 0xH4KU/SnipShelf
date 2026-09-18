@@ -163,4 +163,63 @@ final class LibraryFeaturesTests: XCTestCase {
         XCTAssertEqual(store.clips, snapshot)
     }
 
+    @MainActor func testRectangleRetainsPixelsAndContinuousCaptureUsesChosenGroup() async throws {
+        _ = NSApplication.shared
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let suite = "org.snipshelf.tests.rectangle." + UUID().uuidString
+        let preferences = UserDefaults(suiteName: suite)!
+        defer { try? FileManager.default.removeItem(at: root); preferences.removePersistentDomain(forName: suite) }
+        let image = try SnipShelfTests().image(width: 100, height: 100)
+        let model = CanvasModel(image: image, isScreen: false, preferences: preferences,
+            subjectCutout: { _, _ in XCTFail("Rectangle capture must not run background removal by default"); return nil }, complete: { _ in }, cancel: {})
+        XCTAssertTrue(model.subjectMaskEnabled)
+        model.mode = .rectangle
+        XCTAssertFalse(model.subjectMaskEnabled)
+        model.mode = .lasso
+        XCTAssertTrue(model.subjectMaskEnabled)
+        model.mode = .rectangle
+        let view = CanvasNSView(model: model)
+        let window = NSWindow(contentRect: CGRect(x: 0, y: 0, width: 400, height: 400), styleMask: .borderless, backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false; window.contentView = view
+        defer { window.close() }
+        func mouse(_ type: NSEvent.EventType, _ point: CGPoint) -> NSEvent {
+            NSEvent.mouseEvent(with: type, location: view.convert(point, to: nil), modifierFlags: [], timestamp: 0,
+                windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1)!
+        }
+        for reverse in [false, true] {
+            let a = CGPoint(x: 40, y: 80), b = CGPoint(x: 320, y: 360)
+            view.mouseDown(with: mouse(.leftMouseDown, reverse ? b : a))
+            view.mouseDragged(with: mouse(.leftMouseDragged, reverse ? a : b))
+            view.mouseUp(with: mouse(.leftMouseUp, reverse ? a : b))
+            let crop = try XCTUnwrap(model.reviewImage)
+            XCTAssertEqual(crop.width, 70); XCTAssertEqual(crop.height, 70)
+            let expected = try ImageCore.crop(image, points: SnipShelfTests().rect(10, 20, 70, 70))
+            XCTAssertEqual(try ImageCore.png(crop), try ImageCore.png(expected))
+            for (x, y) in [(0, 0), (69, 0), (0, 69), (69, 69)] { XCTAssertEqual(SnipShelfTests().color(crop, x, y).alphaComponent, 1) }
+            model.reset(); view.refresh()
+        }
+        view.mouseDown(with: mouse(.leftMouseDown, CGPoint(x: 40, y: 40)))
+        view.mouseUp(with: mouse(.leftMouseUp, CGPoint(x: 41, y: 41)))
+        XCTAssertFalse(model.reviewing)
+        let app = AppController(store: ShelfStore(root: root), preferences: preferences)
+        let group = try app.store.createFolder(name: "Capture destination")
+        app.presentCanvas(image: image, frame: CGRect(x: 100, y: 100, width: 640, height: 480), screenCapture: false, name: "Rectangle")
+        let capture = try XCTUnwrap(app.captureModel)
+        defer { capture.cancel() }
+        XCTAssertEqual(capture.mode, .rectangle); XCTAssertFalse(capture.subjectMaskEnabled)
+        app.captureFolderID = group.id
+        for _ in 0..<2 {
+            try capture.prepareReview(points: SnipShelfTests().rect(10, 10, 70, 70))
+            capture.confirm(keepSelecting: true)
+            XCTAssertTrue(app.captureModel === capture)
+            XCTAssertFalse(capture.reviewing)
+            XCTAssertFalse(capture.selecting)
+            XCTAssertNil(capture.previousOutline, "A saved selection must not be resurrected by refinement undo")
+        }
+        XCTAssertEqual(app.store.clips.count, 2)
+        XCTAssertTrue(app.store.clips.allSatisfy { $0.folderID == group.id })
+        capture.confirm()
+        XCTAssertEqual(app.store.clips.count, 2)
+    }
+
 }
