@@ -5,6 +5,7 @@ import Carbon
 import UniformTypeIdentifiers
 import Observation
 import Darwin
+import PaletteKit
 
 enum AppShortcut: UInt32, CaseIterable {
     case capture = 1, references, lasso, polygon, rectangle
@@ -59,6 +60,8 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
     let store: ShelfStore
     let shelf: ShelfWindow
     let defaults: UserDefaults
+    let paletteDefaults: PaletteDefaults
+    let paletteSettings: PaletteModel
     var busy = false
     var isDraggingClips = false
     var draggedClipIDs: Set<UUID> = []
@@ -70,11 +73,17 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
     var captureFolderID: UUID?
     @ObservationIgnored var shelfColumns = 2
     private var previewID: UUID?
+    private(set) var previewPalette: PaletteModel?
     var previewClip: Clip? {
         get { store.clips.first { $0.id == previewID } }
-        set { previewID = newValue?.id; updatePreview() }
+        set {
+            if previewID != newValue?.id { previewPalette?.cancel(); previewPalette = nil }
+            previewID = newValue?.id
+            updatePreview()
+        }
     }
     var referenceWindows: [ReferenceTarget: ShelfPanel] = [:]
+    var referencePalettes: [UUID: PaletteModel] = [:]
     var referencesHidden = false
     var status: String?
     private(set) var copiedClipID: UUID?
@@ -100,6 +109,12 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
             qaRoot = URL(fileURLWithPath: args[index + 1], isDirectory: true)
         }
         defaults = preferences ?? (qaRoot == nil ? .standard : UserDefaults(suiteName: "org.snipshelf.app.qa")!)
+        if preferences == nil, store == nil, qaRoot == nil, defaults.object(forKey: "analysisDefaults") == nil,
+           let lab = UserDefaults(suiteName: "org.snipshelf.palette-lab")?.dictionary(forKey: "analysisDefaults") {
+            defaults.set(lab, forKey: "analysisDefaults")
+        }
+        paletteDefaults = PaletteDefaults(preferences: defaults)
+        paletteSettings = PaletteModel(defaults: paletteDefaults)
         self.store = store ?? ShelfStore(root: qaRoot)
         shelf = ShelfWindow(defaults: defaults)
         backdrop = defaults.integer(forKey: "backdrop")
@@ -671,15 +686,25 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
         guard let clip = previewClip else { previewWindow?.orderOut(nil); return }
         if !store.isSearching && store.currentFolderID != clip.folderID { store.openFolder(clip.folderID) }
         store.selection = clip.id
+        if previewPalette == nil {
+            let palette = PaletteModel(defaults: paletteDefaults)
+            previewPalette = palette
+            palette.open(store.url(for: clip))
+        }
         if previewWindow == nil {
-            let window = ShelfPanel(contentRect: CGRect(x: 0, y: 0, width: 720, height: 580),
+            var size = clip.imageWindowContentSize
+            size.height += 42 // Match the pin's image area, with room for preview navigation.
+            let window = ShelfPanel(contentRect: CGRect(origin: .zero, size: size),
                                     styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
             window.isReleasedWhenClosed = false
-            window.minSize = CGSize(width: 560, height: 420)
+            window.minSize = CGSize(width: 280, height: 260)
             window.titlebarAppearsTransparent = true
             window.level = .floating
             window.delegate = self
-            window.contentView = NSHostingView(rootView: PreviewView(app: self))
+            let content = NSHostingView(rootView: PreviewView(app: self))
+            // Loading and hidden content must not resize the preview window.
+            content.sizingOptions = []
+            window.contentView = content
             window.onKey = { [weak self] in self?.handlePreviewKey($0) ?? false }
             window.center()
             previewWindow = window
@@ -689,7 +714,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
         previewWindow?.makeKeyAndOrderFront(nil)
     }
     func refreshPreviewTitle() {
-        guard let clip = previewClip else { previewWindow?.orderOut(nil); return }
+        guard let clip = previewClip else { previewClip = nil; return }
         previewWindow?.title = clip.name
     }
     var previewClips: [Clip] {
@@ -707,6 +732,11 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
         if let clip = adjacentPreview(delta) { previewClip = clip }
     }
     func handlePreviewKey(_ event: NSEvent) -> Bool {
+        if event.keyCode == 53, event.modifierFlags.intersection([.command, .control, .option]).isEmpty,
+           let palette = previewPalette, palette.settingsPresented {
+            palette.settingsPresented = false
+            return true
+        }
         if event.modifierFlags.contains(.command), !event.modifierFlags.contains(.shift), event.charactersIgnoringModifiers?.lowercased() == "z" {
             store.undo(); return true
         }
@@ -735,6 +765,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
         if let target = referenceWindows.first(where: { $0.value === notification.object as? NSWindow })?.key {
             persistReferenceFrame(notification)
             referenceWindows.removeValue(forKey: target)
+            if case .clip(let id) = target { referencePalettes.removeValue(forKey: id)?.cancel() }
             if referenceWindows.isEmpty { referencesHidden = false }
         }
     }
@@ -823,6 +854,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
         return true
     }
     func showSettings() {
+        paletteSettings.restoreDefaults()
         if settingsWindow == nil { settingsWindow = utilityWindow(title: "SnipShelf Settings", size: CGSize(width: 500, height: min(720, shelf.screen.visibleFrame.height - 40)), content: SettingsView(app: self)) }
         NSApp.activate(ignoringOtherApps: true); settingsWindow?.makeKeyAndOrderFront(nil)
     }

@@ -1,11 +1,12 @@
 import AppKit
 import SwiftUI
+import PaletteKit
 
 struct PreviewView: View {
     @Bindable var app: AppController
     var body: some View {
-        if let clip = app.previewClip {
-            PreviewContent(app: app, clip: clip).id(clip.id)
+        if let clip = app.previewClip, let palette = app.previewPalette {
+            PreviewContent(app: app, clip: clip, palette: palette).id(clip.id)
         }
     }
 }
@@ -13,13 +14,14 @@ struct PreviewView: View {
 private struct PreviewContent: View {
     @Bindable var app: AppController
     let clip: Clip
+    let palette: PaletteModel
     @State private var image: NSImage?
     @State private var failure: String?
     @State private var actualSize = false
     @State private var zoomReset = 0
     var body: some View {
         VStack(spacing: 0) {
-            HStack(spacing: 12) {
+            HStack(spacing: 8) {
                 ControlGroup {
                     Button("Previous Clip", systemImage: "chevron.left") { app.movePreview(-1) }
                         .disabled(app.adjacentPreview(-1) == nil).help("Previous clip (←)")
@@ -27,22 +29,18 @@ private struct PreviewContent: View {
                         .disabled(app.adjacentPreview(1) == nil).help("Next clip (→)")
                 }.labelStyle(.iconOnly).fixedSize()
                 if let index = app.previewClips.firstIndex(where: { $0.id == clip.id }) {
-                    Text("\(index + 1) of \(app.previewClips.count)").font(.callout).foregroundStyle(.secondary).monospacedDigit()
+                    Text("\(index + 1) of \(app.previewClips.count)").font(.caption).foregroundStyle(.secondary).monospacedDigit().lineLimit(1)
                 }
                 Spacer()
                 Button("Pin", systemImage: "pin") { app.openReference(.clip(clip.id)) }
                     .help("Keep this image in a separate reference window (⇧⌘P)")
-                Button(app.copiedClipID == clip.id ? "Copied" : "Copy",
-                       systemImage: app.copiedClipID == clip.id ? "checkmark" : "doc.on.doc") { app.copy(clip) }
-                    .buttonStyle(.borderedProminent).help("Copy image (⌘C)")
-                    .accessibilityInputLabels(["Copy", "Copy Image"])
                 Menu("Image Actions", systemImage: "ellipsis") {
                     Button("Rename Image…", systemImage: "pencil") { app.renameClip(clip) }
                         .disabled(app.store.isReadOnly)
                     Button("Crop a Copy…", systemImage: "crop") { app.previewClip = nil; app.recrop(clip) }
                     Button("Export PNG…", systemImage: "square.and.arrow.up") { app.export(clip) }
                 }.labelStyle(.iconOnly).menuIndicator(.hidden).fixedSize().help("Image actions")
-            }.buttonStyle(.bordered).controlSize(.regular).padding(.horizontal, 20).padding(.vertical, 12)
+            }.buttonStyle(.bordered).controlSize(.small).padding(10)
                 .background(.bar)
             Divider()
             ZStack {
@@ -53,24 +51,9 @@ private struct PreviewContent: View {
                     ContentUnavailableView("Unable to Open Image", systemImage: "photo.badge.exclamationmark", description: Text(failure))
                 } else { ProgressView().controlSize(.small) }
             }.clipped()
+            ClipPaletteView(palette: palette, backdrop: app.backdrop)
             Divider()
-            HStack(spacing: 12) {
-                Picker("Background", selection: $app.backdrop) {
-                    Text("Checkerboard").tag(0); Text("Light").tag(1); Text("Dark").tag(2)
-                }.labelsHidden().pickerStyle(.segmented).fixedSize(horizontal: true, vertical: false)
-                Spacer()
-                ViewThatFits {
-                    Text("\(clip.width) × \(clip.height) px").font(.caption).foregroundStyle(.secondary).monospacedDigit().fixedSize()
-                    Color.clear.frame(width: 0, height: 0)
-                }
-                ControlGroup {
-                    Button("Fit") { actualSize = false; zoomReset += 1 }
-                        .keyboardShortcut("0", modifiers: .command).help("Fit image to window (⌘0)")
-                    Button("100%") { actualSize = true; zoomReset += 1 }
-                        .keyboardShortcut("1", modifiers: .command).help("Show actual pixels (⌘1) · Pinch to zoom, scroll to pan")
-                }.fixedSize()
-            }.buttonStyle(.bordered).controlSize(.small).padding(.horizontal, 20).padding(.vertical, 12)
-                .background(.bar)
+            ClipImageControls(app: app, clip: clip, backdrop: $app.backdrop, actualSize: $actualSize, zoomReset: $zoomReset)
         }
         .task(id: clip.id) {
             let url = app.store.url(for: clip)
@@ -92,6 +75,8 @@ struct PreviewImage: NSViewRepresentable {
     let actualSize: Bool
     let reset: Int
     let onKey: (NSEvent) -> Bool
+    var app: AppController? = nil
+    var clip: Clip? = nil
     func makeNSView(context: Context) -> ImageScrollView {
         let scroll = ImageScrollView()
         scroll.contentView = CenteredClipView()
@@ -101,14 +86,18 @@ struct PreviewImage: NSViewRepresentable {
         scroll.autohidesScrollers = true
         scroll.allowsMagnification = true
         scroll.minMagnification = 0.00001; scroll.maxMagnification = 16
-        let picture = NSImageView()
+        let picture = ReferenceImageView()
         picture.imageScaling = .scaleProportionallyUpOrDown
         picture.setAccessibilityLabel("Clip preview. Pinch to zoom and scroll to pan.")
         scroll.documentView = picture
         return scroll
     }
     func updateNSView(_ scroll: ImageScrollView, context: Context) {
-        (scroll.documentView as? NSImageView)?.image = image
+        if let picture = scroll.documentView as? ReferenceImageView {
+            picture.image = image; picture.app = app; picture.clip = clip
+            if let clip { picture.setAccessibilityLabel("\(clip.name). Pinch to zoom, Space-drag to pan, or drag to copy to another app.") }
+        }
+        scroll.spacePans = clip != nil
         scroll.onKey = onKey
         if scroll.lastReset != reset {
             scroll.lastReset = reset
@@ -132,6 +121,9 @@ struct PreviewImage: NSViewRepresentable {
         var lastReset = -1
         var fitsWindow = true
         var needsZoomReset = true
+        var spacePans = false
+        private(set) var spaceDown = false
+        private var panStart: CGPoint?
         private var previousSize = CGSize.zero
         override var acceptsFirstResponder: Bool { true }
         override func layout() {
@@ -149,7 +141,43 @@ struct PreviewImage: NSViewRepresentable {
         }
         override func magnify(with event: NSEvent) { fitsWindow = false; super.magnify(with: event) }
         override func keyDown(with event: NSEvent) {
+            if spacePans, event.keyCode == 49, event.modifierFlags.intersection([.command, .control, .option]).isEmpty {
+                spaceDown = true; return
+            }
+            if handleZoomKey(event) { return }
             if onKey?(event) != true { super.keyDown(with: event) }
         }
+        override func keyUp(with event: NSEvent) {
+            if event.keyCode == 49 { spaceDown = false; endPan() }
+            else { super.keyUp(with: event) }
+        }
+        override func performKeyEquivalent(with event: NSEvent) -> Bool {
+            handleZoomKey(event) || super.performKeyEquivalent(with: event)
+        }
+        private func handleZoomKey(_ event: NSEvent) -> Bool {
+            guard event.modifierFlags.contains(.command), !(window?.firstResponder is NSTextView) else { return false }
+            switch event.charactersIgnoringModifiers {
+            case "0", "1":
+                fitsWindow = event.charactersIgnoringModifiers == "0"
+                needsZoomReset = true; needsLayout = true
+            case "+", "=", "-":
+                fitsWindow = false
+                let amount: CGFloat = event.charactersIgnoringModifiers == "-" ? 1 / 1.25 : 1.25
+                setMagnification(min(maxMagnification, max(minMagnification, magnification * amount)),
+                                 centeredAt: CGPoint(x: contentView.bounds.midX, y: contentView.bounds.midY))
+            default: return false
+            }
+            return true
+        }
+        func beginPan(_ event: NSEvent) { panStart = event.locationInWindow }
+        @discardableResult func pan(_ event: NSEvent) -> Bool {
+            guard let start = panStart else { return false }
+            let point = event.locationInWindow, origin = contentView.bounds.origin
+            contentView.scroll(to: CGPoint(x: origin.x - (point.x - start.x) / magnification,
+                                          y: origin.y - (point.y - start.y) / magnification))
+            reflectScrolledClipView(contentView); panStart = point
+            return true
+        }
+        func endPan() { panStart = nil }
     }
 }

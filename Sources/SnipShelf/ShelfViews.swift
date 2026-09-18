@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import PaletteKit
 import UniformTypeIdentifiers
 
 struct ShelfView: View {
@@ -187,6 +188,11 @@ struct SettingsView: View {
                     ShortcutRecorder(app: app, shortcut: .references).frame(width: 145, height: 32)
                 }
                 Text("Works while you are using another app.").font(.caption).foregroundStyle(.secondary)
+            }
+            Section("Color Palettes") {
+                PaletteSettingsView(model: app.paletteSettings)
+                Text("Defaults apply to new previews and pins. Adjust an open image using the settings button below its color strip.")
+                    .font(.caption).foregroundStyle(.secondary)
             }
             Section("Storage") {
                 HStack {

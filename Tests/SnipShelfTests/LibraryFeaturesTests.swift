@@ -222,4 +222,51 @@ final class LibraryFeaturesTests: XCTestCase {
         XCTAssertEqual(app.store.clips.count, 2)
     }
 
+    @MainActor func testPinnedReferenceZoomPanAndExportRemainIndependent() async throws {
+        _ = NSApplication.shared
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = ShelfStore(root: root)
+        let clip = try store.add(SnipShelfTests().image(width: 1800, height: 1200), name: "Pin")
+        let app = AppController(store: store)
+        app.openReference(.clip(clip.id))
+        defer { app.closeReference(.clip(clip.id)) }
+        try await Task.sleep(for: .milliseconds(150))
+        let window = try XCTUnwrap(app.referenceWindows[.clip(clip.id)])
+        func scroll(_ view: NSView) -> PreviewImage.ImageScrollView? {
+            (view as? PreviewImage.ImageScrollView) ?? view.subviews.lazy.compactMap(scroll).first
+        }
+        let viewport = try XCTUnwrap(scroll(window.contentView!))
+        let picture = try XCTUnwrap(viewport.documentView as? ReferenceImageView)
+        XCTAssertEqual(picture.clip?.id, clip.id)
+        XCTAssertTrue(picture.app === app)
+        let original = try Data(contentsOf: store.url(for: clip)), boardCount = NSPasteboard(name: .drag).changeCount
+        func key(_ type: NSEvent.EventType, _ code: UInt16, _ text: String, _ flags: NSEvent.ModifierFlags = []) -> NSEvent {
+            NSEvent.keyEvent(with: type, location: .zero, modifierFlags: flags, timestamp: 0,
+                windowNumber: window.windowNumber, context: nil, characters: text, charactersIgnoringModifiers: text, isARepeat: false, keyCode: code)!
+        }
+        viewport.keyDown(with: key(.keyDown, 18, "1", .command))
+        viewport.layoutSubtreeIfNeeded()
+        XCTAssertEqual(viewport.magnification, 1)
+        viewport.keyDown(with: key(.keyDown, 49, " "))
+        func mouse(_ type: NSEvent.EventType, _ x: CGFloat) -> NSEvent {
+            NSEvent.mouseEvent(with: type, location: CGPoint(x: x, y: 100), modifierFlags: [], timestamp: 0,
+                windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1)!
+        }
+        let before = viewport.contentView.bounds.origin
+        picture.mouseDown(with: mouse(.leftMouseDown, 100))
+        picture.mouseDragged(with: mouse(.leftMouseDragged, 125))
+        picture.mouseUp(with: mouse(.leftMouseUp, 125))
+        viewport.keyUp(with: key(.keyUp, 49, " "))
+        XCTAssertFalse(viewport.spaceDown)
+        XCTAssertNotEqual(viewport.contentView.bounds.origin, before)
+        XCTAssertEqual(NSPasteboard(name: .drag).changeCount, boardCount)
+        XCTAssertFalse(app.isDraggingClips)
+        XCTAssertEqual(try Data(contentsOf: store.url(for: clip)), original)
+        viewport.keyDown(with: key(.keyDown, 29, "0", .command))
+        viewport.layoutSubtreeIfNeeded()
+        XCTAssertLessThan(viewport.magnification, 1)
+        app.toggleReferences(); XCTAssertFalse(window.isVisible)
+        app.toggleReferences(); XCTAssertTrue(window.isVisible)
+    }
 }

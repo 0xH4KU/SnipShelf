@@ -1,6 +1,13 @@
 import AppKit
 import SwiftUI
 import Observation
+import PaletteKit
+
+extension Clip {
+    var imageWindowContentSize: CGSize {
+        CGSize(width: 340, height: min(560, max(286, 340 * CGFloat(height) / CGFloat(width) + 116)))
+    }
+}
 
 enum ReferenceTarget: Hashable {
     case group(UUID), clip(UUID)
@@ -38,8 +45,11 @@ extension AppController {
         case .group: size = CGSize(width: 340, height: 410)
         case .clip(let id):
             guard let clip = store.clips.first(where: { $0.id == id }) else { return }
+            let palette = PaletteModel(defaults: paletteDefaults)
+            referencePalettes[id] = palette
+            palette.open(store.url(for: clip))
             if defaults.object(forKey: target.backgroundKey) == nil { defaults.set(backdrop, forKey: target.backgroundKey) }
-            size = CGSize(width: 340, height: min(500, max(220, 340 * CGFloat(clip.height) / CGFloat(clip.width) + 50)))
+            size = clip.imageWindowContentSize
         }
         let panel = ShelfPanel(contentRect: CGRect(origin: .zero, size: size),
                                styleMask: [.titled, .closable, .resizable, .nonactivatingPanel], backing: .buffered, defer: false)
@@ -141,6 +151,11 @@ extension AppController {
     func handleReferenceKey(_ event: NSEvent, target: ReferenceTarget) -> Bool {
         let command = event.modifierFlags.contains(.command)
         let key = event.charactersIgnoringModifiers?.lowercased()
+        if event.keyCode == 53, event.modifierFlags.intersection([.command, .control, .option]).isEmpty,
+           case .clip(let id) = target, let palette = referencePalettes[id], palette.settingsPresented {
+            palette.settingsPresented = false
+            return true
+        }
         if command && key == "z" && !event.modifierFlags.contains(.shift) { store.undo(); return true }
         if (event.keyCode == 53 && event.modifierFlags.intersection([.command, .control, .option]).isEmpty) || (command && key == "w") {
             closeReference(target); return true

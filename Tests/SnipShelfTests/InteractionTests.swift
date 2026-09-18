@@ -518,7 +518,7 @@ final class InteractionTests: XCTestCase {
         }
     }
 
-    @MainActor func testPreviewBackgroundPickerStaysInsetAfterFitAndResize() async throws {
+    @MainActor func testPreviewControlsStayInsetAfterFitAndResize() async throws {
         _ = NSApplication.shared
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         let suite = "org.snipshelf.tests." + UUID().uuidString
@@ -533,7 +533,7 @@ final class InteractionTests: XCTestCase {
         let content = try XCTUnwrap(window.contentView)
         func descendants(_ view: NSView) -> [NSView] { [view] + view.subviews.flatMap(descendants) }
         try await Task.sleep(for: .milliseconds(150))
-        for width: CGFloat in [560, 720, 900] {
+        for width: CGFloat in [280, 340, 560] {
             window.setContentSize(CGSize(width: width, height: 580))
             for command in ["1", "0", "0"] {
                 let event = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: .command, timestamp: 0,
@@ -542,11 +542,14 @@ final class InteractionTests: XCTestCase {
                 XCTAssertTrue(window.performKeyEquivalent(with: event))
                 try await Task.sleep(for: .milliseconds(30))
                 content.layoutSubtreeIfNeeded()
-                let picker = try XCTUnwrap(descendants(content).compactMap { $0 as? NSSegmentedControl }.first)
-                let rect = picker.convert(picker.bounds, to: content)
-                XCTAssertGreaterThanOrEqual(rect.minX, 19, "Picker must stay inside the 20-point toolbar inset")
-                XCTAssertLessThanOrEqual(rect.maxX, content.bounds.maxX - 19)
-                XCTAssertGreaterThanOrEqual(picker.bounds.width + 1, picker.intrinsicContentSize.width)
+                let controls = descendants(content).compactMap { $0 as? NSSegmentedControl }
+                XCTAssertEqual(controls.count, 2, "Preview navigation and zoom controls must both remain visible")
+                for control in controls {
+                    let rect = control.convert(control.bounds, to: content)
+                    XCTAssertGreaterThanOrEqual(rect.minX, 9, "Controls must stay inside the 10-point toolbar inset")
+                    XCTAssertLessThanOrEqual(rect.maxX, content.bounds.maxX - 9)
+                    XCTAssertGreaterThanOrEqual(control.bounds.width + 1, control.intrinsicContentSize.width)
+                }
             }
         }
     }
@@ -690,6 +693,60 @@ final class InteractionTests: XCTestCase {
         app.previewClip = store.clips[0]
         window.close()
         XCTAssertNil(app.previewClip)
+    }
+
+    @MainActor func testPreviewKeepsWindowSizeAndReopensInFit() async throws {
+        _ = NSApplication.shared
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let suite = "org.snipshelf.tests." + UUID().uuidString
+        let preferences = UserDefaults(suiteName: suite)!
+        defer { try? FileManager.default.removeItem(at: root); preferences.removePersistentDomain(forName: suite) }
+        let store = ShelfStore(root: root)
+        let landscape = try store.add(SnipShelfTests().image(width: 2400, height: 1600), name: "Landscape preview")
+        let portrait = try store.add(SnipShelfTests().image(width: 800, height: 2000), name: "Portrait preview")
+        let app = AppController(store: store, preferences: preferences)
+        app.previewClip = landscape
+        let window = try XCTUnwrap(NSApp.windows.first { $0 is ShelfPanel && $0.title == landscape.name })
+        defer { window.close() }
+        let content = try XCTUnwrap(window.contentView)
+        func scrollIn(_ view: NSView) -> PreviewImage.ImageScrollView? {
+            if let scroll = view as? PreviewImage.ImageScrollView { return scroll }
+            return view.subviews.lazy.compactMap(scrollIn).first
+        }
+        func fittedPreview() async throws -> PreviewImage.ImageScrollView {
+            try await Task.sleep(for: .milliseconds(150))
+            window.layoutIfNeeded(); content.layoutSubtreeIfNeeded()
+            let scroll = try XCTUnwrap(scrollIn(content))
+            scroll.layoutSubtreeIfNeeded()
+            let picture = try XCTUnwrap(scroll.documentView)
+            XCTAssertGreaterThanOrEqual(window.frame.width, 280)
+            XCTAssertGreaterThanOrEqual(window.frame.height, 260)
+            XCTAssertGreaterThan(scroll.contentSize.height, 180, "Loading or reopening must not collapse the image area")
+            XCTAssertTrue(scroll.fitsWindow, "Each preview opens in Fit, including after using 100%")
+            XCTAssertLessThanOrEqual(picture.frame.width * scroll.magnification, scroll.contentSize.width + 1)
+            XCTAssertLessThanOrEqual(picture.frame.height * scroll.magnification, scroll.contentSize.height + 1)
+            return scroll
+        }
+        _ = try await fittedPreview()
+        window.setContentSize(CGSize(width: 800, height: 640))
+        let resizedFrame = window.frame
+        for clip in [portrait, landscape] {
+            app.previewClip = clip
+            let scroll = try await fittedPreview()
+            XCTAssertEqual(window.frame, resizedFrame, "Switching images must preserve the user's window size")
+            let actualSize = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: .command, timestamp: 0,
+                                             windowNumber: window.windowNumber, context: nil, characters: "1",
+                                             charactersIgnoringModifiers: "1", isARepeat: false, keyCode: 18)!
+            XCTAssertTrue(scroll.performKeyEquivalent(with: actualSize))
+            scroll.layoutSubtreeIfNeeded()
+            XCTAssertEqual(scroll.magnification, 1, accuracy: 0.001)
+            window.close()
+            try await Task.sleep(for: .milliseconds(50))
+            content.layoutSubtreeIfNeeded()
+            app.previewClip = clip
+            _ = try await fittedPreview()
+            XCTAssertEqual(window.frame, resizedFrame, "Closing and reopening must preserve the user's window size")
+        }
     }
 
     @MainActor func testNativePreviewFitAndActualPixels() async throws {

@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import PaletteKit
 
 struct ReferenceView: View {
     let app: AppController
@@ -24,8 +25,8 @@ struct ReferenceView: View {
                     }.font(.caption).foregroundStyle(.secondary).padding(12).background(.bar)
                 }
             case .clip(let id):
-                if let clip = app.store.clips.first(where: { $0.id == id }) {
-                    PinnedClipView(app: app, clip: clip)
+                if let clip = app.store.clips.first(where: { $0.id == id }), let palette = app.referencePalettes[id] {
+                    PinnedClipView(app: app, clip: clip, palette: palette)
                 }
             }
         }
@@ -36,13 +37,17 @@ struct ReferenceView: View {
 private struct PinnedClipView: View {
     let app: AppController
     let clip: Clip
+    let palette: PaletteModel
     @AppStorage private var backdrop: Int
     @State private var image: NSImage?
     @State private var failure: String?
+    @State private var actualSize = false
+    @State private var zoomReset = 0
 
-    init(app: AppController, clip: Clip) {
+    init(app: AppController, clip: Clip, palette: PaletteModel) {
         self.app = app
         self.clip = clip
+        self.palette = palette
         _backdrop = AppStorage(wrappedValue: app.backdrop, ReferenceTarget.clip(clip.id).backgroundKey, store: app.defaults)
     }
 
@@ -52,8 +57,8 @@ private struct PinnedClipView: View {
                 ImageBackdrop(style: backdrop)
                 if let failure { ContentUnavailableView("Unable to Open Image", systemImage: "photo.badge.exclamationmark", description: Text(failure)) }
                 else if let preview = image ?? app.store.thumbnail(for: clip) {
-                    ReferenceImage(app: app, clip: clip, image: preview)
-                        .padding(12)
+                    PreviewImage(image: preview, actualSize: actualSize, reset: zoomReset,
+                                 onKey: { app.handleReferenceKey($0, target: .clip(clip.id)) }, app: app, clip: clip)
                         .contextMenu {
                             Button("Preview", systemImage: "eye") { app.previewClip = clip }
                             Button("Rename Image…", systemImage: "pencil") { app.renameClip(clip) }
@@ -64,19 +69,10 @@ private struct PinnedClipView: View {
                 }
                 else { ProgressView().controlSize(.small) }
             }.clipped()
+            ClipPaletteView(palette: palette, backdrop: backdrop)
             Divider()
-            HStack(spacing: 8) {
-                Menu("Image Background", systemImage: "circle.lefthalf.filled") {
-                    Picker("Background", selection: $backdrop) {
-                        Text("Checkerboard").tag(0); Text("Light").tag(1); Text("Dark").tag(2)
-                    }
-                }.labelStyle(.iconOnly).menuIndicator(.hidden).fixedSize().help("Image background")
-                Text("\(clip.width) × \(clip.height)").font(.caption).foregroundStyle(.secondary).monospacedDigit().lineLimit(1)
-                Spacer(minLength: 0)
-                Button(app.copiedClipID == clip.id ? "Copied" : "Copy",
-                       systemImage: app.copiedClipID == clip.id ? "checkmark" : "doc.on.doc") { app.copy(clip) }
-                    .help("Copy image (⌘C)").accessibilityInputLabels(["Copy", "Copy Image"])
-            }.buttonStyle(.bordered).controlSize(.small).padding(10).background(.bar)
+            ClipImageControls(app: app, clip: clip, backdrop: $backdrop, actualSize: $actualSize, zoomReset: $zoomReset)
+                .help("\(clip.width) × \(clip.height) px · Pinch to zoom · Space-drag to pan · Drag the image to export")
         }
         .task(id: clip.id) {
             let url = app.store.url(for: clip)
@@ -93,56 +89,43 @@ private struct PinnedClipView: View {
 }
 
 /// Native dragging keeps file/PNG export and internal group moves on the same path.
-struct ReferenceImage: NSViewRepresentable {
-    let app: AppController
-    let clip: Clip
-    let image: NSImage
-
-    func makeNSView(context: Context) -> ImageView {
-        let view = ImageView()
-        view.imageScaling = .scaleProportionallyUpOrDown
-        for axis: NSLayoutConstraint.Orientation in [.horizontal, .vertical] {
-            view.setContentHuggingPriority(.defaultLow, for: axis)
-            view.setContentCompressionResistancePriority(.defaultLow, for: axis)
+final class ReferenceImageView: NSImageView, NSDraggingSource {
+    weak var app: AppController?
+    var clip: Clip?
+    private var mouseStart: CGPoint?
+    override var acceptsFirstResponder: Bool { true }
+    override var needsPanelToBecomeKey: Bool { true }
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+    override func mouseDown(with event: NSEvent) {
+        window?.makeKey(); window?.makeFirstResponder(self)
+        if let scroll = enclosingScrollView as? PreviewImage.ImageScrollView, scroll.spaceDown {
+            mouseStart = nil; scroll.beginPan(event); return
         }
-        return view
+        mouseStart = event.locationInWindow
     }
-    func updateNSView(_ view: ImageView, context: Context) {
-        view.app = app; view.clip = clip; view.image = image
-        view.setAccessibilityLabel("\(clip.name). Drag to copy this image to another app.")
+    override func mouseUp(with event: NSEvent) {
+        mouseStart = nil
+        (enclosingScrollView as? PreviewImage.ImageScrollView)?.endPan()
     }
-
-    final class ImageView: NSImageView, NSDraggingSource {
-        weak var app: AppController?
-        var clip: Clip?
-        private var mouseStart: CGPoint?
-        override var acceptsFirstResponder: Bool { true }
-        override var needsPanelToBecomeKey: Bool { true }
-        override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
-        override func mouseDown(with event: NSEvent) {
-            window?.makeKey(); window?.makeFirstResponder(self)
-            mouseStart = event.locationInWindow
-        }
-        override func mouseUp(with event: NSEvent) { mouseStart = nil }
-        override func mouseDragged(with event: NSEvent) {
-            guard let start = mouseStart, hypot(event.locationInWindow.x - start.x, event.locationInWindow.y - start.y) >= 4,
-                  let app, let clip, let image, let writer = app.clipPasteboardItem(clip) else { return }
-            mouseStart = nil
-            let item = NSDraggingItem(pasteboardWriter: writer)
-            let scale = min(bounds.width / image.size.width, bounds.height / image.size.height)
-            let size = CGSize(width: image.size.width * scale, height: image.size.height * scale)
-            item.setDraggingFrame(CGRect(x: bounds.midX - size.width / 2, y: bounds.midY - size.height / 2, width: size.width, height: size.height), contents: image)
-            beginDraggingSession(with: [item], event: event, source: self)
-        }
-        func draggingSession(_ session: NSDraggingSession, sourceOperationMaskFor context: NSDraggingContext) -> NSDragOperation {
-            context == .withinApplication ? [.copy, .move] : .copy
-        }
-        func draggingSession(_ session: NSDraggingSession, willBeginAt screenPoint: NSPoint) {
-            app?.isDraggingClips = true
-            app?.draggedClipIDs = clip.map { [$0.id] } ?? []
-        }
-        func draggingSession(_ session: NSDraggingSession, endedAt screenPoint: NSPoint, operation: NSDragOperation) {
-            app?.isDraggingClips = false; app?.draggedClipIDs = []
-        }
+    override func mouseDragged(with event: NSEvent) {
+        if let scroll = enclosingScrollView as? PreviewImage.ImageScrollView, scroll.pan(event) { return }
+        guard let start = mouseStart, hypot(event.locationInWindow.x - start.x, event.locationInWindow.y - start.y) >= 4,
+              let app, let clip, let image, let writer = app.clipPasteboardItem(clip) else { return }
+        mouseStart = nil
+        let item = NSDraggingItem(pasteboardWriter: writer)
+        let scale = min(bounds.width / image.size.width, bounds.height / image.size.height)
+        let size = CGSize(width: image.size.width * scale, height: image.size.height * scale)
+        item.setDraggingFrame(CGRect(x: bounds.midX - size.width / 2, y: bounds.midY - size.height / 2, width: size.width, height: size.height), contents: image)
+        beginDraggingSession(with: [item], event: event, source: self)
+    }
+    func draggingSession(_ session: NSDraggingSession, sourceOperationMaskFor context: NSDraggingContext) -> NSDragOperation {
+        context == .withinApplication ? [.copy, .move] : .copy
+    }
+    func draggingSession(_ session: NSDraggingSession, willBeginAt screenPoint: NSPoint) {
+        app?.isDraggingClips = true
+        app?.draggedClipIDs = clip.map { [$0.id] } ?? []
+    }
+    func draggingSession(_ session: NSDraggingSession, endedAt screenPoint: NSPoint, operation: NSDragOperation) {
+        app?.isDraggingClips = false; app?.draggedClipIDs = []
     }
 }
