@@ -7,6 +7,12 @@ and Palette Lab commit snapshots also compile and pass their focused checks.
 Both build scripts pass shell syntax checks. Logs for this verification are
 under `.local/commit-sequence/`, including `04-integration.log` for the full suite.
 
+Historical `.local/` logs and fixtures, HTML layout studies, and older packaged
+apps were archived outside the checkout during the September 19 cleanup.
+Paths in the dated notes below refer to that archive; new QA runs recreate
+`.local/` as needed. The rebuildable `.build/` cache was removed, and the running
+`dist/SnipShelf.app` was retained.
+
 ## September 19 Shelf controls and scrolling
 
 Three focused native collection tests pass, covering hidden Shelf scrollbars

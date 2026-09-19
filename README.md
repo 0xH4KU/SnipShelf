@@ -173,10 +173,10 @@ scripts/            Build, run, and icon tools
 docs/               Usage, validation, and screenshots
 .codex/             Local development action
 dist/SnipShelf.app  Latest local app (rebuilt in place, ignored)
-.local/archives/    Compressed older apps (ignored)
+.local/             Generated QA output (ignored)
 ```
 
-`.build/`, `dist/`, and `.local/` are ignored. They hold build caches, packaged apps, and local QA/archive material. Normal user clips live in `~/Library/Application Support/SnipShelf/`, outside this repository.
+`.build/`, `dist/`, and `.local/` are generated as needed and ignored. They hold build caches, packaged apps, and local QA output. Keep disposable layout studies and historical build/QA archives outside the checkout. Normal user clips live in `~/Library/Application Support/SnipShelf/`, outside this repository.
 
 ## License
 
