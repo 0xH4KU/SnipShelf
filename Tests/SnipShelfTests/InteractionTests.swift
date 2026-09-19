@@ -839,7 +839,7 @@ final class InteractionTests: XCTestCase {
             for hover in [false, true] {
                 let item = ShelfCollection.Item()
                 item.configure(app: app, entry: .group(folder, store.clips.reversed().filter { $0.folderID == folder.id }))
-                try await render(item.view, size: CGSize(width: 144, height: 153),
+                try await render(item.view, size: CGSize(width: 144, height: 173),
                                  name: "group-card-\(hover ? "hover" : "rest")-" + suffix, appearance: appearance, hover: hover)
             }
             try await render(NSHostingView(rootView: CaptureReviewView(model: model, refine: {})),

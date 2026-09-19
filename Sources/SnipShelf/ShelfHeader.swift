@@ -21,7 +21,9 @@ struct ShelfHeader: View {
                 Spacer(minLength: 0)
                 if let folder = app.store.currentFolder {
                     Menu("Group Options", systemImage: "ellipsis") {
-                        Button("Open Reference Window", systemImage: "arrow.up.forward.square") { app.openReference(.group(folder.id)) }
+                        Button { app.openReference(.group(folder.id)) } label: {
+                            Label { Text("Open Floating Reference") } icon: { Image(nsImage: ReferencePinButton.icon) }
+                        }
                         Button("Rename Group…", systemImage: "pencil") { app.editFolder(folder) }
                             .disabled(app.store.isReadOnly)
                         Button("Dissolve Group — Keep Clips", systemImage: "rectangle.stack.badge.minus") { app.store.dissolveFolder(folder.id) }

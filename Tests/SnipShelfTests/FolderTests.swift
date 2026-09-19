@@ -81,7 +81,8 @@ final class FolderTests: XCTestCase {
         XCTAssertNil(coordinator.collectionView(collection, pasteboardWriterForItemAt: IndexPath(item: 0, section: 0)))
         let writer = try XCTUnwrap(coordinator.collectionView(collection, pasteboardWriterForItemAt: IndexPath(item: 6, section: 0)) as? NSPasteboardItem)
         XCTAssertEqual(writer.string(forType: .fileURL), store.url(for: loose).absoluteString)
-        let start = try point(5)
+        let sourceCard = try card(5)
+        let start = sourceCard.dragHandle.convert(CGPoint(x: 22, y: 11), to: nil)
         @MainActor func mouse(_ type: NSEvent.EventType, _ point: CGPoint) throws -> NSEvent {
             try XCTUnwrap(NSEvent.mouseEvent(with: type, location: point, modifierFlags: [], timestamp: 0,
                 windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1))
@@ -89,7 +90,6 @@ final class FolderTests: XCTestCase {
         let open = try mouse(.leftMouseDown, start)
         let release = window.convertPoint(fromScreen: CGPoint(x: NSScreen.main!.visibleFrame.midX, y: NSScreen.main!.visibleFrame.midY))
         let dragBoard = NSPasteboard(name: .drag), boardChanges = dragBoard.changeCount
-        let sourceCard = try card(5)
         let sourceFrame = window.convertToScreen(sourceCard.convert(sourceCard.bounds, to: nil))
         let liftedFrame = sourceFrame.offsetBy(dx: release.x - start.x, dy: release.y - start.y)
         // Inspect the actual tracking loop before allowing the mouse-up event through.
@@ -109,11 +109,11 @@ final class FolderTests: XCTestCase {
         }
         RunLoop.main.add(inspection, forMode: .common)
         NSApp.postEvent(try mouse(.leftMouseDragged, release), atStart: true)
-        collection.mouseDown(with: open)
+        sourceCard.dragHandle.mouseDown(with: open)
         XCTAssertTrue(inspectedLift)
         let reference = try XCTUnwrap(app.referenceWindows[.group(groups[5].0.id)])
         var placed = NSWindow.frameRect(forContentRect: CGRect(x: 0, y: 0, width: 340, height: 410), styleMask: reference.styleMask)
-        placed.origin = CGPoint(x: liftedFrame.minX, y: liftedFrame.maxY - placed.height)
+        placed.origin = CGPoint(x: liftedFrame.midX - placed.width / 2, y: liftedFrame.midY - placed.height / 2)
         placed = ShelfWindow.constrainedFrame(placed, to: NSScreen.main!.visibleFrame)
         if !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
             XCTAssertEqual(reference.frame.width, liftedFrame.width, accuracy: 1, "The real window must begin at the card's size")
@@ -132,6 +132,8 @@ final class FolderTests: XCTestCase {
             XCTAssertLessThan(reference.alphaValue, 1, "Opening should crossfade instead of popping into view")
             XCTAssertGreaterThan(reference.frame.width, liftedFrame.width, "The card must visibly grow into the reference window")
             XCTAssertLessThan(reference.frame.width, placed.width)
+            XCTAssertEqual(reference.frame.midX, liftedFrame.midX, accuracy: 1, "Expansion keeps the dropped card's center fixed")
+            XCTAssertEqual(reference.frame.midY, liftedFrame.midY, accuracy: 1)
             let lift = try XCTUnwrap(NSApp.windows.compactMap { $0 as? ReferenceLiftWindow }.first { $0.isVisible })
             XCTAssertEqual(lift.frame.minX, reference.frame.minX, accuracy: 1)
             XCTAssertEqual(lift.frame.minY, reference.frame.minY, accuracy: 1)
@@ -140,7 +142,7 @@ final class FolderTests: XCTestCase {
             let nextRelease = CGPoint(x: release.x + 30, y: release.y - 20)
             NSApp.postEvent(try mouse(.leftMouseUp, nextRelease), atStart: true)
             NSApp.postEvent(try mouse(.leftMouseDragged, nextRelease), atStart: true)
-            collection.mouseDown(with: open)
+            sourceCard.dragHandle.mouseDown(with: open)
             XCTAssertEqual(reference.referenceTransition?.destinationFrame?.size, placed.size, "Regrabbing mid-expansion must preserve the intended full window size")
             placed = try XCTUnwrap(reference.referenceTransition?.destinationFrame)
         }
@@ -154,14 +156,20 @@ final class FolderTests: XCTestCase {
         app.closeReference(.group(groups[5].0.id))
         NSApp.postEvent(try mouse(.leftMouseUp, start), atStart: true)
         NSApp.postEvent(try mouse(.leftMouseDragged, release), atStart: true)
-        collection.mouseDown(with: open)
+        sourceCard.dragHandle.mouseDown(with: open)
         XCTAssertTrue(app.referenceWindows.isEmpty, "Releasing back on the source returns the card without opening a reference")
         XCTAssertNil(store.currentFolderID, "Returning a drag must not also trigger a click")
         try await Task.sleep(for: .milliseconds(320))
         XCTAssertEqual(sourceCard.alphaValue, 1, accuracy: 0.01)
-        NSApp.postEvent(try mouse(.leftMouseUp, start), atStart: true)
-        NSApp.postEvent(try mouse(.leftMouseDragged, CGPoint(x: start.x + 1, y: start.y + 1)), atStart: true)
-        collection.mouseDown(with: open)
+        let browse = try point(5)
+        NSApp.postEvent(try mouse(.leftMouseUp, release), atStart: true)
+        NSApp.postEvent(try mouse(.leftMouseDragged, release), atStart: true)
+        collection.mouseDown(with: try mouse(.leftMouseDown, browse))
+        XCTAssertTrue(app.referenceWindows.isEmpty, "Dragging a group thumbnail must not take over the handle's gesture")
+        XCTAssertNil(store.currentFolderID)
+        NSApp.postEvent(try mouse(.leftMouseUp, browse), atStart: true)
+        NSApp.postEvent(try mouse(.leftMouseDragged, CGPoint(x: browse.x + 1, y: browse.y + 1)), atStart: true)
+        collection.mouseDown(with: try mouse(.leftMouseDown, browse))
         XCTAssertEqual(store.currentFolderID, groups[5].0.id)
         XCTAssertTrue(app.referenceWindows.isEmpty, "A click with minor pointer jitter must only browse the group")
         try await Task.sleep(for: .milliseconds(100))
@@ -489,7 +497,7 @@ extension FolderTests {
         XCTAssertEqual(store.selectedIDs, [c.id])
         try await Task.sleep(for: .milliseconds(320))
 
-        let button = card.pinButton
+        let button = card.dragHandle
         let start = button.convert(CGPoint(x: button.bounds.midX, y: button.bounds.midY), to: nil)
         func mouse(_ type: NSEvent.EventType, _ point: CGPoint) throws -> NSEvent {
             try XCTUnwrap(NSEvent.mouseEvent(with: type, location: point, modifierFlags: [], timestamp: 0,
@@ -525,7 +533,7 @@ extension FolderTests {
         dropFrame = cardFrame.offsetBy(dx: nextRelease.x - start.x, dy: nextRelease.y - start.y)
         try await Task.sleep(for: .milliseconds(320))
         var placed = existing.frame
-        placed.origin = CGPoint(x: dropFrame.minX, y: dropFrame.maxY - placed.height)
+        placed.origin = CGPoint(x: dropFrame.midX - placed.width / 2, y: dropFrame.midY - placed.height / 2)
         placed = ShelfWindow.constrainedFrame(placed, to: NSScreen.main!.visibleFrame)
         XCTAssertEqual(existing.frame.minX, placed.minX, accuracy: 1)
         XCTAssertEqual(existing.frame.maxY, placed.maxY, accuracy: 1)
@@ -555,9 +563,8 @@ extension FolderTests {
         XCTAssertEqual(preferences.string(forKey: ReferenceTarget.clip(b.id).frameKey), previousSavedFrame)
         try await Task.sleep(for: .milliseconds(320))
         app.toggleReferences()
-        NSApp.postEvent(try mouse(.leftMouseUp, start), atStart: true)
-        button.mouseDown(with: try mouse(.leftMouseDown, start))
-        XCTAssertNotNil(app.referenceWindows[.clip(b.id)], "A normal pin-button click still opens one reference")
+        card.pinButton.performClick(nil)
+        XCTAssertNotNil(app.referenceWindows[.clip(b.id)], "The separate window button opens a reference on click")
         let opening = try XCTUnwrap(app.referenceWindows[.clip(b.id)])
         let openingDestination = try XCTUnwrap(opening.referenceTransition?.destinationFrame)
         app.closeReference(.clip(b.id))

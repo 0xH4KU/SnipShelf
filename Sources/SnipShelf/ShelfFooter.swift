@@ -12,13 +12,17 @@ struct ShelfFooter: View {
                 .lineLimit(1).help(status)
             Spacer(minLength: 0)
             if let clip = store.selectedClip {
-                Button("Pin as Reference", systemImage: "pin") { app.openReference(.clip(clip.id)) }
-                    .labelStyle(.iconOnly).frame(width: 28, height: 28).help("Pin as reference (⇧⌘P)")
+                Button { app.openReference(.clip(clip.id)) } label: {
+                    Label { Text("Open Floating Reference") } icon: { Image(nsImage: ReferencePinButton.icon) }
+                }
+                    .labelStyle(.iconOnly).frame(width: 28, height: 28).help("Open floating reference (⇧⌘P)")
                 Button("Copy Image", systemImage: "doc.on.doc") { app.copy(clip) }
                     .labelStyle(.iconOnly).frame(width: 28, height: 28).help("Copy image (⌘C)")
             } else if store.selectedFolderID != nil || store.selectedIDs.count > 1 {
-                Button("Pin Selection", systemImage: "pin", action: app.pinSelection)
-                    .labelStyle(.iconOnly).frame(width: 28, height: 28).help("Pin selection as references (⇧⌘P)")
+                Button(action: app.pinSelection) {
+                    Label { Text("Open Selection as References") } icon: { Image(nsImage: ReferencePinButton.icon) }
+                }
+                    .labelStyle(.iconOnly).frame(width: 28, height: 28).help("Open selection as floating references (⇧⌘P)")
             }
             if !store.undoHistory.isEmpty {
                 Button(store.undoTitle, systemImage: "arrow.uturn.backward", action: store.undo)
@@ -48,7 +52,9 @@ struct ShelfFooter: View {
                     }
                 }
                 if !app.referenceWindows.isEmpty {
-                    Button(app.referencesHidden ? "Show Reference Windows" : "Hide Reference Windows", systemImage: "pin", action: app.toggleReferences)
+                    Button(action: app.toggleReferences) {
+                        Label { Text(app.referencesHidden ? "Show Reference Windows" : "Hide Reference Windows") } icon: { Image(nsImage: ReferencePinButton.icon) }
+                    }
                     Divider()
                 }
                 Button("Paste Image", systemImage: "document.on.clipboard", action: app.paste)

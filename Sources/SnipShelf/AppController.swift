@@ -672,7 +672,8 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
             else { shelf.collapse() }
         case 123, 124, 125, 126:
             if event.modifierFlags.contains(.shift) { return false }
-            let ids = (store.currentFolderID == nil && !store.isSearching ? store.folders.map(\.id) : []) + store.visibleClips.map(\.id)
+            let visible = (store.currentFolderID == nil && !store.isSearching ? store.folders.map(\.id) : []) + store.visibleClips.map(\.id)
+            let ids = store.isSearching ? visible : store.orderedIDs(visible)
             guard !ids.isEmpty else { return true }
             let current = ids.firstIndex { $0 == store.selection }
             let delta = event.keyCode == 123 ? -1 : event.keyCode == 124 ? 1 : event.keyCode == 125 ? shelfColumns : -shelfColumns
@@ -720,7 +721,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
     var previewClips: [Clip] {
         guard let clip = store.clips.first(where: { $0.id == previewClip?.id }) else { return [] }
         if store.isSearching { return store.visibleClips }
-        return store.clips.filter { $0.folderID == clip.folderID }
+        return store.clips(in: clip.folderID)
     }
     func adjacentPreview(_ delta: Int) -> Clip? {
         guard let clip = previewClip else { return nil }

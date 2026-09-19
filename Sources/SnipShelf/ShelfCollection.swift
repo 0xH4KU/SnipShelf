@@ -64,8 +64,12 @@ struct ShelfCollection: NSViewRepresentable {
         let members = Dictionary(grouping: app.store.clips.reversed(), by: \.folderID)
         let groups: [Entry] = referenceFolderID == nil && app.store.currentFolderID == nil && !app.store.isSearching
             ? app.store.folders.map { .group($0, members[$0.id] ?? []) } : []
-        let clips = referenceFolderID.map { id in app.store.clips.filter { $0.folderID == id } } ?? app.store.visibleClips
-        let entries = groups + clips.map(Entry.clip)
+        let clips = referenceFolderID.map { app.store.clips(in: $0) } ?? app.store.visibleClips
+        let unsorted = groups + clips.map(Entry.clip)
+        let byID = Dictionary(uniqueKeysWithValues: unsorted.map { ($0.id, $0) })
+        let entries = referenceFolderID != nil || !app.store.isSearching
+            ? app.store.orderedIDs(unsorted.map(\.id)).compactMap { byID[$0] } : unsorted
+        guard coordinator.reorderingID == nil else { return }
         collection.updateLayout(for: scroll.contentView.bounds.width)
         coordinator.selectedIDs.formIntersection(Set(entries.map(\.id)))
         if coordinator.entries != entries {
@@ -110,13 +114,25 @@ struct ShelfCollection: NSViewRepresentable {
         override func loadView() { view = CardView() }
         override func prepareForReuse() {
             super.prepareForReuse()
+            view.alphaValue = 1
             (view as? CardView)?.setHovered(false, animated: false)
         }
         override var isSelected: Bool { didSet { (view as? CardView)?.selected = isSelected } }
+        override var draggingImageComponents: [NSDraggingImageComponent] {
+            guard let card = view as? CardView, let image = card.picture.image else { return [] }
+            let component = NSDraggingImageComponent(key: .icon)
+            component.contents = image
+            let scale = min(card.picture.bounds.width / image.size.width, card.picture.bounds.height / image.size.height)
+            let size = CGSize(width: image.size.width * scale, height: image.size.height * scale)
+            component.frame = CGRect(x: card.picture.frame.midX - size.width / 2, y: card.picture.frame.midY - size.height / 2,
+                                     width: size.width, height: size.height)
+            return [component]
+        }
         func configure(app: AppController, entry: Entry, selected: Bool? = nil, showsLocation: Bool = false) {
             guard let card = view as? CardView else { return }
             if card.folderID != entry.folder?.id { card.dropTargeted = false }
             card.folderID = entry.folder?.id
+            card.alphaValue = (collectionView?.dataSource as? Coordinator)?.reorderingID == entry.id ? 0.45 : 1
             card.selected = selected ?? (app.store.selectedIDs.contains(entry.id) || app.store.selectedFolderID == entry.id)
             card.recent = entry.clip.map { app.store.latestID == $0.id } ?? false
             card.openGroup = nil
@@ -126,16 +142,23 @@ struct ShelfCollection: NSViewRepresentable {
             card.setAccessibilityElement(entry.folder != nil)
             card.pinButton.app = app
             card.pinButton.referenceTarget = entry.folder.map { .group($0.id) } ?? .clip(entry.id)
+            card.dragHandle.app = app
+            card.dragHandle.referenceTarget = card.pinButton.referenceTarget
             let name = switch entry { case .clip(let clip): clip.name; case .group(let folder, _): folder.name }
             card.caption.font = .systemFont(ofSize: 11, weight: entry.folder == nil ? .regular : .medium)
             card.location.isHidden = !showsLocation
             card.location.stringValue = entry.clip.map { app.store.locationName(for: $0) } ?? ""
             card.caption.toolTip = name
-            let pinLabel = entry.folder != nil ? "Open \(name) in a reference window" : "Pin \(name) as a reference"
-            card.pinButton.image = NSImage(systemSymbolName: entry.folder != nil ? "arrow.up.forward.square" : "pin", accessibilityDescription: pinLabel)
-            card.pinButton.toolTip = pinLabel + " · Drag to place the window"
+            let pinLabel = "Open \(name) in a floating reference window"
+            card.pinButton.image = ReferencePinButton.icon
+            card.pinButton.toolTip = pinLabel
             card.pinButton.setAccessibilityLabel(pinLabel)
-            card.pinButton.setAccessibilityHelp("Click to open, or drag to place the reference window. Drag back here or press Escape to cancel.")
+            card.pinButton.setAccessibilityHelp("Opens a separate floating window. The original stays on the shelf.")
+            card.dragHandle.toolTip = showsLocation || app.store.isReadOnly
+                ? "Drag out to open a floating reference" : "Drag to reorder · Drag out for a floating reference"
+            card.dragHandle.setAccessibilityLabel("Move \(name)")
+            card.dragHandle.setAccessibilityHelp(card.dragHandle.toolTip! + ". Escape cancels a drag."
+                + (showsLocation || app.store.isReadOnly ? "" : " Select and use Option–Command–arrow keys to reorder."))
             switch entry {
             case .clip(let clip):
                 card.picture.image = app.store.thumbnail(for: clip)
@@ -153,7 +176,7 @@ struct ShelfCollection: NSViewRepresentable {
                 card.more.isHidden = clips.count <= 3
                 card.more.stringValue = clips.count > 3 ? "+\(clips.count - 3)" : ""
                 card.caption.stringValue = folder.name
-                card.toolTip = "\(folder.name) · \(clips.count) clips · Click to browse, drag out to reference, or drop clips here"
+                card.toolTip = "\(folder.name) · \(clips.count) clips · Click to browse or drop clips here"
                 card.setAccessibilityRole(.button)
                 card.setAccessibilityLabel("\(folder.name), group, \(clips.count) clips")
                 card.openGroup = { [weak app] in app?.openFolder(folder.id) }
@@ -170,6 +193,15 @@ struct ShelfCollection: NSViewRepresentable {
         let relatedFrames = [ThumbnailFrame(), ThumbnailFrame()]
         let more = NSTextField(labelWithString: "")
         let pinButton = ReferencePinButton()
+        let dragHandle = ReferenceDragHandle()
+        var collection: CollectionView? {
+            var parent = superview
+            while let view = parent {
+                if let collection = view as? CollectionView { return collection }
+                parent = view.superview
+            }
+            return nil
+        }
         private var tracking: NSTrackingArea?
         private(set) var hovered = false
         var pressed = false { didSet { needsDisplay = true } }
@@ -212,6 +244,7 @@ struct ShelfCollection: NSViewRepresentable {
             more.isHidden = true
             addSubview(more)
             addSubview(pinButton)
+            addSubview(dragHandle)
         }
         required init?(coder: NSCoder) { fatalError() }
         override func updateTrackingAreas() {
@@ -223,9 +256,6 @@ struct ShelfCollection: NSViewRepresentable {
         override func viewDidMoveToWindow() {
             super.viewDidMoveToWindow()
             if window == nil { setHovered(false, animated: false) }
-        }
-        override func resetCursorRects() {
-            if folderID != nil { addCursorRect(bounds, cursor: .openHand) }
         }
         override func mouseEntered(with event: NSEvent) { setHovered(true) }
         override func mouseExited(with event: NSEvent) { setHovered(false) }
@@ -244,20 +274,21 @@ struct ShelfCollection: NSViewRepresentable {
         override func layout() {
             super.layout()
             if folderID != nil {
-                picture.frame = CGRect(x: bounds.midX - 63 - (hovered ? 1 : 0), y: hovered ? 2 : 5, width: 82, height: 115)
+                picture.frame = CGRect(x: bounds.midX - 63 - (hovered ? 1 : 0), y: hovered ? 20 : 23, width: 82, height: 115)
                 for (index, frame) in relatedFrames.enumerated() {
                     frame.frame = CGRect(x: bounds.midX + 23 + (hovered ? 2 : 0),
-                                         y: 11 + CGFloat(index) * 53 + (hovered ? (index == 0 ? -2 : 2) : 0), width: 40, height: 46)
+                                         y: 29 + CGFloat(index) * 53 + (hovered ? (index == 0 ? -2 : 2) : 0), width: 40, height: 46)
                     related[index].frame = frame.bounds.insetBy(dx: 3, dy: 3)
                 }
-                more.frame = CGRect(x: bounds.midX + 23, y: 114, width: 40, height: 15)
+                more.frame = CGRect(x: bounds.midX + 23, y: 132, width: 40, height: 15)
             } else {
-                picture.frame = CGRect(x: 10, y: 10, width: max(1, bounds.width - 20), height: 106)
+                picture.frame = CGRect(x: 10, y: 28, width: max(1, bounds.width - 20), height: 106)
             }
             for (image, frame) in zip(related, relatedFrames) { frame.isHidden = image.isHidden }
-            caption.frame = CGRect(x: 6, y: 132, width: max(1, bounds.width - 35), height: 18)
-            location.frame = CGRect(x: 6, y: 151, width: max(1, bounds.width - 12), height: 16)
-            pinButton.frame = CGRect(x: bounds.width - 25, y: 130, width: 22, height: 22)
+            dragHandle.frame = CGRect(x: bounds.midX - 22, y: 0, width: 44, height: 22)
+            caption.frame = CGRect(x: 6, y: 150, width: max(1, bounds.width - 39), height: 18)
+            location.frame = CGRect(x: 6, y: 169, width: max(1, bounds.width - 12), height: 16)
+            pinButton.frame = CGRect(x: bounds.width - 30, y: 146, width: 27, height: 27)
         }
         override func draw(_ dirtyRect: NSRect) {
             if hovered || pressed {
@@ -301,11 +332,63 @@ struct ShelfCollection: NSViewRepresentable {
             .map { NSPasteboard.PasteboardType($0) }
         weak var app: AppController?
         var referenceFolderID: UUID?
+        private var originalDragIndex: Int?
+        var handleDragEvent: NSEvent?
+        var canReorder: Bool {
+            guard let app else { return false }
+            return !app.store.isReadOnly && (referenceFolderID != nil || !app.store.isSearching)
+        }
+
+        func beginReordering(_ id: UUID) {
+            guard canReorder, let coordinator = dataSource as? Coordinator,
+                  let index = coordinator.entries.firstIndex(where: { $0.id == id }) else { return }
+            originalDragIndex = index
+            coordinator.reorderingID = id
+        }
+
+        func updateReordering(at screenPoint: CGPoint) {
+            guard let window, let coordinator = dataSource as? Coordinator, coordinator.reorderingID != nil else { return }
+            let point = convert(window.convertPoint(fromScreen: screenPoint), from: nil)
+            guard visibleRect.contains(point) else { return }
+            let slots = indexPathsForVisibleItems().compactMap { index -> (Int, CGRect)? in
+                layoutAttributesForItem(at: index).map { (index.item, $0.frame) }
+            }
+            // Layout slots stay stable while the native item views animate between them.
+            if let nearest = slots.min(by: {
+                hypot($0.1.midX - point.x, $0.1.midY - point.y) < hypot($1.1.midX - point.x, $1.1.midY - point.y)
+            }) { moveDraggedItem(to: nearest.0) }
+        }
+
+        private func moveDraggedItem(to index: Int) {
+            guard let coordinator = dataSource as? Coordinator, let id = coordinator.reorderingID,
+                  let previous = coordinator.entries.firstIndex(where: { $0.id == id }), previous != index else { return }
+            coordinator.updating = true
+            defer { coordinator.updating = false }
+            coordinator.entries.insert(coordinator.entries.remove(at: previous), at: index)
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion ? 0 : 0.2
+                context.timingFunction = CAMediaTimingFunction(controlPoints: 0.2, 0.75, 0.25, 1)
+                performBatchUpdates { self.moveItem(at: IndexPath(item: previous, section: 0), to: IndexPath(item: index, section: 0)) }
+            }
+        }
+
+        func finishReordering(commit: Bool) -> CGRect? {
+            guard let coordinator = dataSource as? Coordinator, let id = coordinator.reorderingID,
+                  let originalDragIndex else { return nil }
+            defer { coordinator.reorderingID = nil; self.originalDragIndex = nil }
+            if !commit || app?.store.reorder(coordinator.entries.map(\.id), in: referenceFolderID ?? app?.store.currentFolderID) != true {
+                moveDraggedItem(to: originalDragIndex)
+            }
+            guard let index = coordinator.entries.firstIndex(where: { $0.id == id }),
+                  let frame = layoutAttributesForItem(at: IndexPath(item: index, section: 0))?.frame else { return nil }
+            item(at: IndexPath(item: index, section: 0))?.view.alphaValue = 1
+            return window?.convertToScreen(convert(frame, to: nil))
+        }
         func updateLayout(for width: CGFloat) {
             guard let layout = collectionViewLayout as? NSCollectionViewFlowLayout, width > 26 else { return }
             let columns = max(1, Int((width - 16) / 136))
             let size = CGSize(width: floor((width - 26 - CGFloat(columns - 1) * 10) / CGFloat(columns)),
-                              height: referenceFolderID == nil && app?.store.isSearching == true ? 173 : 153)
+                              height: referenceFolderID == nil && app?.store.isSearching == true ? 191 : 173)
             if layout.itemSize != size { layout.itemSize = size }
             if referenceFolderID == nil { app?.shelfColumns = columns }
         }
@@ -328,8 +411,14 @@ struct ShelfCollection: NSViewRepresentable {
             window?.makeKey(); window?.makeFirstResponder(self)
             if let entry = entry(at: convert(event.locationInWindow, from: nil)), let app {
                 if let folder = entry.folder, event.modifierFlags.intersection([.command, .shift]).isEmpty {
-                    let card = indexPathForItem(at: convert(event.locationInWindow, from: nil)).flatMap { item(at: $0)?.view } ?? self
-                    if !app.trackReferenceDrag(.group(folder.id), from: card, event: event) { app.openFolder(folder.id) }
+                    var dragged = false
+                    while let next = window?.nextEvent(matching: [.leftMouseDragged, .leftMouseUp]) {
+                        if hypot(next.locationInWindow.x - event.locationInWindow.x, next.locationInWindow.y - event.locationInWindow.y) >= 6 { dragged = true }
+                        if next.type == .leftMouseUp {
+                            if !dragged, self.entry(at: convert(next.locationInWindow, from: nil))?.id == folder.id { app.openFolder(folder.id) }
+                            break
+                        }
+                    }
                     return
                 }
                 if event.clickCount == 2, let clip = entry.clip {
@@ -348,6 +437,16 @@ struct ShelfCollection: NSViewRepresentable {
         }
         func handleKey(_ event: NSEvent) -> Bool {
             guard let app else { return false }
+            if event.modifierFlags.intersection([.command, .option, .control, .shift]) == [.command, .option],
+               [UInt16(123), 124, 125, 126].contains(event.keyCode), canReorder,
+               let coordinator = dataSource as? Coordinator, selectionIndexPaths.count == 1, let selected = selectionIndexPaths.first {
+                var ids = coordinator.entries.map(\.id)
+                let delta = event.keyCode == 123 || event.keyCode == 126 ? -1 : 1
+                let destination = min(ids.count - 1, max(0, selected.item + delta))
+                ids.insert(ids.remove(at: selected.item), at: destination)
+                app.store.reorder(ids, in: referenceFolderID ?? app.store.currentFolderID)
+                return true
+            }
             guard let referenceFolderID else { return app.handleKey(event) }
             if app.handleReferenceKey(event, target: .group(referenceFolderID)) { return true }
             guard let coordinator = dataSource as? Coordinator else { return false }
@@ -405,6 +504,7 @@ struct ShelfCollection: NSViewRepresentable {
     @MainActor final class Coordinator: NSObject, NSCollectionViewDataSource, NSCollectionViewDelegate {
         let app: AppController
         var entries: [Entry] = []
+        var reorderingID: UUID?
         var updating = false
         var loaded = false
         var restoringPosition = false

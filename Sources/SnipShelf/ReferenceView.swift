@@ -21,7 +21,7 @@ struct ReferenceView: View {
                     HStack {
                         Text("\(app.store.clips.filter { $0.folderID == id }.count) clips")
                         Spacer()
-                        Label("Double-click to pin", systemImage: "pin")
+                        Label { Text("Double-click for reference") } icon: { Image(nsImage: ReferencePinButton.icon) }
                     }.font(.caption).foregroundStyle(.secondary).padding(12).background(.bar)
                 }
             case .clip(let id):

@@ -191,7 +191,7 @@ struct SettingsView: View {
             }
             Section("Color Palettes") {
                 PaletteSettingsView(model: app.paletteSettings)
-                Text("Defaults apply to new previews and pins. Adjust an open image using the settings button below its color strip.")
+                Text("Defaults apply to new previews and floating references. Adjust an open image using the settings button below its color strip.")
                     .font(.caption).foregroundStyle(.secondary)
             }
             Section("Storage") {

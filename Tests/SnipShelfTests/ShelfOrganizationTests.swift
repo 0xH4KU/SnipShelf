@@ -4,6 +4,98 @@ import SwiftUI
 @testable import SnipShelf
 
 final class ShelfOrganizationTests: XCTestCase {
+    @MainActor func testHandleReordersPersistsAndCancelsWithoutExporting() async throws {
+        _ = NSApplication.shared
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let suite = "org.snipshelf.tests." + UUID().uuidString
+        let preferences = UserDefaults(suiteName: suite)!
+        defer { try? FileManager.default.removeItem(at: root); preferences.removePersistentDomain(forName: suite) }
+        let store = ShelfStore(root: root)
+        let image = try SnipShelfTests().image(width: 40, height: 60)
+        let folder = try store.createFolder(name: "Group")
+        let a = try store.add(image, name: "A"), b = try store.add(image, name: "B")
+        let member = try store.add(image, name: "Member", folderID: folder.id)
+        let another = try store.add(image, name: "Another", folderID: folder.id)
+        store.selection = b.id
+        let app = AppController(store: store, preferences: preferences)
+        let host = NSHostingView(rootView: ShelfCollection(app: app))
+        let window = NSWindow(contentRect: CGRect(x: 50, y: 50, width: 300, height: 450), styleMask: .borderless, backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false; window.contentView = host; window.orderFront(nil)
+        defer { window.close(); app.referenceWindows.values.forEach { $0.close() } }
+        try await Task.sleep(for: .milliseconds(100))
+        host.layoutSubtreeIfNeeded()
+        func find(_ view: NSView) -> ShelfCollection.CollectionView? {
+            (view as? ShelfCollection.CollectionView) ?? view.subviews.lazy.compactMap(find).first
+        }
+        let grid = try XCTUnwrap(find(host))
+        let coordinator = try XCTUnwrap(grid.dataSource as? ShelfCollection.Coordinator)
+        func card(_ index: Int) throws -> ShelfCollection.CardView {
+            try XCTUnwrap(grid.item(at: IndexPath(item: index, section: 0))?.view as? ShelfCollection.CardView)
+        }
+        func mouse(_ type: NSEvent.EventType, _ point: CGPoint) throws -> NSEvent {
+            try XCTUnwrap(NSEvent.mouseEvent(with: type, location: point, modifierFlags: [], timestamp: 0,
+                windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1))
+        }
+        let source = try card(0), destination = try card(2)
+        let handle = source.dragHandle
+        let start = handle.convert(CGPoint(x: 22, y: 11), to: nil)
+        let release = destination.dragHandle.convert(CGPoint(x: 22, y: 11), to: nil)
+        let hit = grid.hitTest(handle.convert(CGPoint(x: 22, y: 11), to: grid.superview))
+        XCTAssertTrue(hit === handle, "The independent handle must receive pointer events")
+        let board = NSPasteboard(name: .drag).changeCount
+        let original = coordinator.entries.map(\.id)
+        let expected = [b.id, a.id, folder.id]
+        let inspect = Timer(timeInterval: 0.06, repeats: false) { _ in
+            MainActor.assumeIsolated {
+                XCTAssertEqual(coordinator.entries.map(\.id), expected, "The grid previews the new position during tracking")
+                XCTAssertTrue(store.itemOrder.isEmpty, "Dragging must not write or add undo steps before release")
+                NSApp.postEvent(try! mouse(.leftMouseUp, release), atStart: true)
+            }
+        }
+        RunLoop.main.add(inspect, forMode: .common)
+        NSApp.postEvent(try mouse(.leftMouseDragged, release), atStart: true)
+        handle.mouseDown(with: try mouse(.leftMouseDown, start))
+        try await Task.sleep(for: .milliseconds(350))
+        XCTAssertEqual(store.orderedIDs(original), expected)
+        XCTAssertEqual(ShelfStore(root: root).orderedIDs(original), expected)
+        XCTAssertEqual(coordinator.entries.map(\.id), expected)
+        XCTAssertEqual(source.alphaValue, 1, accuracy: 0.01)
+        XCTAssertTrue(app.referenceWindows.isEmpty)
+        XCTAssertEqual(NSPasteboard(name: .drag).changeCount, board)
+        XCTAssertEqual(store.undoTitle, "Undo Reorder Items")
+        XCTAssertNil(store.currentFolderID)
+        XCTAssertEqual(store.selectedIDs, [b.id], "Reordering another item must preserve selection")
+
+        let moved = try card(2)
+        let again = moved.dragHandle.convert(CGPoint(x: 22, y: 11), to: nil)
+        let back = try card(0).dragHandle.convert(CGPoint(x: 22, y: 11), to: nil)
+        let escape = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0,
+            windowNumber: window.windowNumber, context: nil, characters: "\u{1b}", charactersIgnoringModifiers: "\u{1b}", isARepeat: false, keyCode: 53))
+        NSApp.postEvent(escape, atStart: true)
+        NSApp.postEvent(try mouse(.leftMouseDragged, back), atStart: true)
+        moved.dragHandle.mouseDown(with: try mouse(.leftMouseDown, again))
+        try await Task.sleep(for: .milliseconds(350))
+        XCTAssertEqual(coordinator.entries.map(\.id), expected, "Escape restores the previewed order")
+        XCTAssertEqual(store.orderedIDs(original), expected)
+        let fresh = try store.add(image, name: "Fresh")
+        store.undo()
+        XCTAssertEqual(store.orderedIDs([folder.id, fresh.id, b.id, a.id]), [folder.id, fresh.id, b.id, a.id])
+        XCTAssertTrue(store.clips.contains(fresh), "Undoing a reorder keeps later imports")
+        XCTAssertTrue(store.reorder([member.id, another.id], in: folder.id))
+        XCTAssertEqual(store.clips(in: folder.id).map(\.id), [member.id, another.id])
+        XCTAssertFalse(store.reorder([a.id, member.id], in: folder.id), "A partial or mixed-folder ordering must be rejected")
+        XCTAssertFalse(store.reorder([member.id, member.id], in: folder.id), "Repeated IDs must be rejected")
+        let saved = store.itemOrder
+        let index = root.appendingPathComponent("index.json")
+        let bytes = try Data(contentsOf: index)
+        try FileManager.default.removeItem(at: index)
+        try FileManager.default.createDirectory(at: index, withIntermediateDirectories: false)
+        XCTAssertFalse(store.reorder([another.id, member.id], in: folder.id))
+        XCTAssertEqual(store.itemOrder, saved, "A failed atomic write must keep the previous arrangement")
+        try FileManager.default.removeItem(at: index)
+        try bytes.write(to: index)
+    }
+
     @MainActor func testOrganizationUndoPreservesNewImagesAndFailedWrites() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }

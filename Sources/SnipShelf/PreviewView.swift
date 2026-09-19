@@ -32,7 +32,12 @@ private struct PreviewContent: View {
                     Text("\(index + 1) of \(app.previewClips.count)").font(.caption).foregroundStyle(.secondary).monospacedDigit().lineLimit(1)
                 }
                 Spacer()
-                Button("Pin", systemImage: "pin") { app.openReference(.clip(clip.id)) }
+                Button { app.openReference(.clip(clip.id)) } label: {
+                    Label { Text("Floating Reference") } icon: {
+                        Image(nsImage: ReferencePinButton.icon).resizable().frame(width: 15, height: 15)
+                    }
+                }
+                    .labelStyle(.iconOnly)
                     .help("Keep this image in a separate reference window (⇧⌘P)")
                 Menu("Image Actions", systemImage: "ellipsis") {
                     Button("Rename Image…", systemImage: "pencil") { app.renameClip(clip) }

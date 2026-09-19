@@ -12,6 +12,8 @@ extension Clip {
 enum ReferenceTarget: Hashable {
     case group(UUID), clip(UUID)
 
+    var id: UUID { switch self { case .group(let id), .clip(let id): id } }
+
     private var preferenceKey: String {
         switch self {
         case .group(let id): "reference.group.\(id)"
@@ -30,14 +32,14 @@ enum ReferenceTarget: Hashable {
 }
 
 extension AppController {
-    func openReference(_ target: ReferenceTarget, from lift: ReferenceLiftWindow? = nil, at topLeft: CGPoint? = nil) {
+    func openReference(_ target: ReferenceTarget, from lift: ReferenceLiftWindow? = nil, at center: CGPoint? = nil) {
         guard let title = target.title(in: store) else {
             if let lift { lift.finish(at: lift.sourceFrame) }
             return
         }
         if referencesHidden { toggleReferences() }
         if let existing = referenceWindows[target] {
-            presentReference(existing, from: lift, at: topLeft)
+            presentReference(existing, from: lift, at: center)
             return
         }
         let size: CGSize
@@ -81,14 +83,14 @@ extension AppController {
         referenceWindows[target] = panel
         panel.setFrame(ShelfWindow.constrainedFrame(frame, to: visible), display: false)
         panel.delegate = self
-        presentReference(panel, from: lift, at: topLeft)
+        presentReference(panel, from: lift, at: center)
     }
 
-    private func presentReference(_ panel: ShelfPanel, from lift: ReferenceLiftWindow?, at topLeft: CGPoint?) {
+    private func presentReference(_ panel: ShelfPanel, from lift: ReferenceLiftWindow?, at center: CGPoint?) {
         guard let lift else { panel.makeKeyAndOrderFront(nil); return }
         var frame = panel.referenceTransition?.destinationFrame ?? panel.frame
-        if let topLeft {
-            frame.origin = CGPoint(x: topLeft.x, y: topLeft.y - frame.height)
+        if let center {
+            frame.origin = CGPoint(x: center.x - frame.width / 2, y: center.y - frame.height / 2)
             let screen = NSScreen.screens.first { $0.frame.contains(CGPoint(x: lift.frame.midX, y: lift.frame.midY)) } ?? panel.screen ?? NSScreen.main
             if let screen { frame = ShelfWindow.constrainedFrame(frame, to: screen.visibleFrame) }
         }
@@ -103,13 +105,29 @@ extension AppController {
         let start = sourceWindow.convertPoint(toScreen: event.locationInWindow)
         let card = (view as? ShelfCollection.CardView) ?? (view.superview as? ShelfCollection.CardView)
         let source = card ?? view
+        let collection = card?.collection
         card?.pressed = true
         var lift: ReferenceLiftWindow?
-        defer { card?.pressed = false; if lift != nil { NSCursor.pop() } }
+        let scrolling = Timer(timeInterval: 0.04, repeats: true) { _ in
+            MainActor.assumeIsolated {
+                guard lift != nil, let collection, collection.canReorder, let lastDrag = collection.handleDragEvent,
+                      sourceWindow.frame.contains(sourceWindow.convertPoint(toScreen: lastDrag.locationInWindow)),
+                      collection.autoscroll(with: lastDrag) else { return }
+                collection.updateReordering(at: sourceWindow.convertPoint(toScreen: lastDrag.locationInWindow))
+            }
+        }
+        RunLoop.main.add(scrolling, forMode: .common)
+        defer {
+            scrolling.invalidate()
+            collection?.handleDragEvent = nil
+            _ = collection?.finishReordering(commit: false)
+            card?.pressed = false
+            if lift != nil { NSCursor.pop() }
+        }
         while let next = sourceWindow.nextEvent(matching: [.leftMouseDragged, .leftMouseUp, .keyDown]) {
             if next.type == .keyDown {
                 guard next.keyCode == 53 else { continue }
-                if let lift { lift.finish(at: lift.sourceFrame) }
+                if let lift { lift.finish(at: collection?.finishReordering(commit: false) ?? lift.sourceFrame) }
                 return true
             }
             let point = (next.window ?? sourceWindow).convertPoint(toScreen: next.locationInWindow)
@@ -121,17 +139,24 @@ extension AppController {
                 guard hypot(point.x - start.x, point.y - start.y) >= 6 else { continue }
                 lift = ReferenceLiftWindow(source: source)
                 guard lift != nil else { return true }
+                collection?.beginReordering(target.id)
                 NSCursor.closedHand.push()
             }
             guard let lift else { return true }
             lift.follow(from: start, to: point)
+            let outside = !sourceWindow.frame.contains(point)
+            let inGrid = collection.map { $0.visibleRect.contains($0.convert(sourceWindow.convertPoint(fromScreen: point), from: nil)) } ?? false
+            lift.showDestination(outside: outside)
+            if !outside { collection?.updateReordering(at: point) }
+            collection?.handleDragEvent = next.type == .leftMouseDragged ? next : nil
             if next.type == .leftMouseUp {
-                if lift.sourceFrame.contains(point) { lift.finish(at: lift.sourceFrame) }
-                else { openReference(target, from: lift, at: CGPoint(x: lift.frame.minX, y: lift.frame.maxY)) }
+                let returnFrame = collection?.finishReordering(commit: !outside && inGrid) ?? lift.sourceFrame
+                if outside { openReference(target, from: lift, at: CGPoint(x: lift.frame.midX, y: lift.frame.midY)) }
+                else { lift.finish(at: returnFrame) }
                 return true
             }
         }
-        if let lift { lift.finish(at: lift.sourceFrame) }
+        if let lift { lift.finish(at: collection?.finishReordering(commit: false) ?? lift.sourceFrame) }
         return true
     }
 
@@ -167,8 +192,7 @@ extension AppController {
     }
 
     func referenceMenuItem(_ target: ReferenceTarget) -> NSMenuItem {
-        let title = { if case .group = target { "Open Reference Window" } else { "Pin as Reference" } }()
-        let item = NSMenuItem(title: title, action: #selector(openReferenceAction(_:)), keyEquivalent: "")
+        let item = NSMenuItem(title: "Open Floating Reference", action: #selector(openReferenceAction(_:)), keyEquivalent: "")
         item.target = self; item.representedObject = target
         return item
     }
@@ -218,12 +242,29 @@ extension AppController {
 }
 
 final class ReferencePinButton: NSButton {
+    static let icon: NSImage = {
+        let image = NSImage(size: CGSize(width: 18, height: 18), flipped: true) { _ in
+            let scale = NSAffineTransform()
+            scale.scale(by: 0.75); scale.concat()
+            NSColor.black.setStroke(); NSColor.black.setFill()
+            let outline = NSBezierPath(roundedRect: CGRect(x: 3, y: 5, width: 18, height: 14), xRadius: 3, yRadius: 3)
+            outline.lineWidth = 1.5; outline.stroke()
+            NSBezierPath(roundedRect: CGRect(x: 11, y: 11, width: 7, height: 5), xRadius: 1.3, yRadius: 1.3).fill()
+            return true
+        }
+        image.isTemplate = true
+        return image
+    }()
     weak var app: AppController?
     var referenceTarget: ReferenceTarget?
+    private var tracking: NSTrackingArea?
+    private var hovered = false
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
         isBordered = false; imagePosition = .imageOnly
+        contentTintColor = .secondaryLabelColor
+        wantsLayer = true
         target = self; action = #selector(openReference)
     }
     required init?(coder: NSCoder) { fatalError() }
@@ -231,11 +272,92 @@ final class ReferencePinButton: NSButton {
         if let referenceTarget { app?.openReference(referenceTarget, from: ReferenceLiftWindow(source: superview ?? self)) }
     }
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+    override func mouseDown(with event: NSEvent) {
+        func press(_ pressed: Bool) {
+            guard !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion, let layer else { return }
+            let animation = CABasicAnimation(keyPath: "transform")
+            animation.fromValue = layer.presentation()?.transform ?? layer.transform
+            let scale = pressed ? 0.94 : 1.0
+            layer.transform = CATransform3DMakeScale(scale, scale, 1)
+            animation.toValue = layer.transform
+            animation.duration = 0.12
+            layer.add(animation, forKey: "press")
+        }
+        press(true)
+        super.mouseDown(with: event)
+        press(false)
+    }
+    override func updateTrackingAreas() {
+        if let tracking { removeTrackingArea(tracking) }
+        tracking = NSTrackingArea(rect: .zero, options: [.activeAlways, .inVisibleRect, .mouseEnteredAndExited], owner: self)
+        addTrackingArea(tracking!)
+        super.updateTrackingAreas()
+    }
+    override func mouseEntered(with event: NSEvent) { hovered = true; needsDisplay = true }
+    override func mouseExited(with event: NSEvent) { hovered = false; needsDisplay = true }
+    override func draw(_ dirtyRect: NSRect) {
+        if hovered || isHighlighted {
+            NSColor.labelColor.withAlphaComponent(isHighlighted ? 0.12 : 0.07).setFill()
+            NSBezierPath(roundedRect: bounds.insetBy(dx: 1, dy: 1), xRadius: 7, yRadius: 7).fill()
+        }
+        super.draw(dirtyRect)
+    }
+}
+
+final class ReferenceDragHandle: NSView {
+    weak var app: AppController?
+    var referenceTarget: ReferenceTarget?
+    private var tracking: NSTrackingArea?
+    private var hovered = false
+    private var pressed = false
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        wantsLayer = true
+        alphaValue = 0.65
+        setAccessibilityElement(true)
+        setAccessibilityRole(.handle)
+    }
+    required init?(coder: NSCoder) { fatalError() }
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
     override func resetCursorRects() { addCursorRect(bounds, cursor: .openHand) }
+    override func updateTrackingAreas() {
+        if let tracking { removeTrackingArea(tracking) }
+        tracking = NSTrackingArea(rect: .zero, options: [.activeAlways, .inVisibleRect, .mouseEnteredAndExited], owner: self)
+        addTrackingArea(tracking!)
+        super.updateTrackingAreas()
+    }
+    override func mouseEntered(with event: NSEvent) { setHovered(true) }
+    override func mouseExited(with event: NSEvent) { setHovered(false) }
+    private func setHovered(_ value: Bool) {
+        hovered = value; needsDisplay = true
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion ? 0 : 0.14
+            animator().alphaValue = value ? 1 : 0.65
+        }
+    }
+    override func draw(_ dirtyRect: NSRect) {
+        if hovered || pressed {
+            NSColor.labelColor.withAlphaComponent(pressed ? 0.12 : 0.07).setFill()
+            NSBezierPath(roundedRect: bounds.insetBy(dx: 5, dy: 2), xRadius: 6, yRadius: 6).fill()
+        }
+        NSColor.labelColor.setFill()
+        for x in [-5.0, 0, 5] {
+            for y in [-2.5, 2.5] {
+                NSBezierPath(ovalIn: CGRect(x: bounds.midX + x - 1, y: bounds.midY + y - 1, width: 2, height: 2)).fill()
+            }
+        }
+    }
     override func mouseDown(with event: NSEvent) {
         guard let app, let referenceTarget else { return }
-        highlight(true)
-        defer { highlight(false) }
-        if !app.trackReferenceDrag(referenceTarget, from: self, event: event), let action { sendAction(action, to: target) }
+        pressed = true; needsDisplay = true
+        defer { pressed = false; needsDisplay = true }
+        if !app.trackReferenceDrag(referenceTarget, from: self, event: event),
+           let collection = (superview as? ShelfCollection.CardView)?.collection,
+           let coordinator = collection.dataSource as? ShelfCollection.Coordinator,
+           let index = coordinator.entries.firstIndex(where: { $0.id == referenceTarget.id }) {
+            collection.selectItems(at: [IndexPath(item: index, section: 0)], scrollPosition: [])
+            window?.makeKey(); window?.makeFirstResponder(collection)
+        }
     }
 }
