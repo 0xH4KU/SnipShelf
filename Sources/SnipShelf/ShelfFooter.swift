@@ -34,6 +34,12 @@ struct ShelfFooter: View {
                     .buttonHover()
                     .environment(\.layoutDirection, .leftToRight)
             }
+            Button("New Group", systemImage: "rectangle.stack.badge.plus") { app.editFolder(including: store.selectedIDs) }
+                .labelStyle(.iconOnly).frame(width: 28, height: 28)
+                .environment(\.layoutDirection, .leftToRight)
+                .buttonHover()
+                .help(store.selectedIDs.isEmpty ? "New group (⇧⌘N)" : "New group with selection (⇧⌘N)")
+                .disabled(store.isReadOnly)
             Menu("Shelf Options", systemImage: "ellipsis") {
                 if !store.selectedIDs.isEmpty {
                     Section("Selection") {

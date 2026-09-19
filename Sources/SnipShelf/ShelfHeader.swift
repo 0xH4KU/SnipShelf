@@ -5,12 +5,12 @@ struct ShelfHeader: View {
     @FocusState private var searching: Bool
     @State private var hoveringHandle = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    private var floating: Bool { app.shelf.dockedEdge == nil }
+    @Environment(\.colorScheme) private var colorScheme
     private var direction: LayoutDirection { app.shelf.dockedEdge == "left" ? .rightToLeft : .leftToRight }
 
     var body: some View {
         @Bindable var store = app.store
-        VStack(spacing: 4) {
+        VStack(spacing: 8) {
             Capsule()
                 .fill(.secondary.opacity(hoveringHandle ? 0.8 : 0.4))
                 .frame(width: hoveringHandle ? 36 : 30, height: 4)
@@ -21,10 +21,7 @@ struct ShelfHeader: View {
                 .animation(reduceMotion ? nil : .easeOut(duration: 0.16), value: hoveringHandle)
                 .help("Drag to move your shelf")
                 .accessibilityHidden(true)
-            HStack(spacing: 8) {
-                if floating {
-                    Color.clear.frame(width: 28, height: 28).allowsHitTesting(false).accessibilityHidden(true)
-                }
+            HStack(spacing: 6) {
                 if app.store.currentFolder != nil {
                     Button("Back to Shelf", systemImage: direction == .rightToLeft ? "chevron.right" : "chevron.left") { app.openFolder(nil) }
                         .labelStyle(.iconOnly).frame(width: 28, height: 28)
@@ -33,13 +30,22 @@ struct ShelfHeader: View {
                         .help("Back to Shelf (⌘[) · Drop clips here to move them out")
                         .onDrop(of: ShelfDropDelegate.types, delegate: ShelfFolderDropDelegate(app: app, folderID: nil))
                 }
-                if floating { Spacer(minLength: 0) }
                 Text(app.store.currentFolder?.name ?? "SnipShelf")
-                    .font(.headline).lineLimit(1).truncationMode(.tail)
+                    .font(.system(size: 13, weight: .semibold)).lineLimit(1).truncationMode(.tail)
                     .environment(\.layoutDirection, .leftToRight)
                     .help(app.store.currentFolder?.name ?? "Drag the title bar to move your shelf")
                     .allowsHitTesting(false)
                 Spacer(minLength: 0)
+                Button("Capture", systemImage: "lasso", action: app.capture)
+                    .buttonStyle(.bordered).controlSize(.regular).fixedSize()
+                    .buttonHover()
+                    .environment(\.layoutDirection, .leftToRight)
+                    .help("Capture an element (\(app.shortcutLabel))").disabled(app.busy || app.store.isReadOnly)
+                Button("Import Images", systemImage: "plus", action: app.chooseImages)
+                    .labelStyle(.iconOnly).frame(width: 28, height: 28)
+                    .buttonHover().foregroundStyle(.secondary)
+                    .environment(\.layoutDirection, .leftToRight)
+                    .help("Import images (⌘O)").disabled(app.busy || app.store.isReadOnly)
                 if let folder = app.store.currentFolder {
                     Menu("Group Options", systemImage: "ellipsis") {
                         Button { app.openReference(.group(folder.id)) } label: {
@@ -64,36 +70,9 @@ struct ShelfHeader: View {
             .buttonStyle(.borderless)
             .background { ShelfMoveHandle(shelf: app.shelf) }
 
-            HStack(spacing: floating ? 4 : 8) {
-                if floating {
-                    Color.clear.frame(width: 28, height: 28).allowsHitTesting(false).accessibilityHidden(true)
-                    Spacer(minLength: 0)
-                }
-                HStack(spacing: 8) {
-                    Button("Capture", systemImage: "lasso", action: app.capture)
-                        .buttonHover()
-                        .environment(\.layoutDirection, .leftToRight)
-                        .help("Capture an element (\(app.shortcutLabel))").disabled(app.busy || app.store.isReadOnly)
-                    Button("Import", systemImage: "plus", action: app.chooseImages)
-                        .buttonHover()
-                        .environment(\.layoutDirection, .leftToRight)
-                        .help("Import images (⌘O)").disabled(app.busy || app.store.isReadOnly)
-                }
-                Spacer(minLength: 0)
-                Button("New Group", systemImage: "rectangle.stack.badge.plus") { app.editFolder(including: app.store.selectedIDs) }
-                    .labelStyle(.iconOnly).frame(width: 28, height: 28)
-                    .environment(\.layoutDirection, .leftToRight)
-                    .buttonStyle(.borderless)
-                    .buttonHover()
-                    .help(app.store.selectedIDs.isEmpty ? "New group (⇧⌘N)" : "New group with selection (⇧⌘N)")
-                    .disabled(app.store.isReadOnly)
-            }
-            .environment(\.layoutDirection, direction)
-            .buttonStyle(.bordered).controlSize(.regular)
-
             HStack(spacing: 6) {
                 Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
-                TextField("Search all groups", text: $store.searchText)
+                TextField("Search all clips", text: $store.searchText)
                     .textFieldStyle(.plain).focused($searching)
                     .accessibilityLabel("Search images and group names")
                     .onExitCommand { store.searchText = ""; searching = false }
@@ -101,10 +80,15 @@ struct ShelfHeader: View {
                     Button("Clear Search", systemImage: "xmark.circle.fill") { store.searchText = "" }
                         .labelStyle(.iconOnly).buttonStyle(.plain).foregroundStyle(.secondary)
                         .buttonHover()
+                } else {
+                    Text("⌘ F").font(.system(size: 10)).foregroundStyle(.tertiary)
+                        .accessibilityHidden(true)
                 }
             }
-            .padding(7).background(.quaternary, in: RoundedRectangle(cornerRadius: 8))
-            .padding(.top, 4)
+            .font(.system(size: 11))
+            .padding(.horizontal, 9).frame(height: 29)
+            .background(Color.black.opacity(colorScheme == .dark ? 0.14 : 0.05), in: RoundedRectangle(cornerRadius: 8))
+            .overlay { RoundedRectangle(cornerRadius: 8).strokeBorder(.primary.opacity(0.06), lineWidth: 0.5).allowsHitTesting(false) }
             .onChange(of: app.searchFocusRequest) { searching = true }
 
             HStack(spacing: 6) {

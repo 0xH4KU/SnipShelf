@@ -74,7 +74,7 @@ The search field searches image names and group names across the entire library.
 
 ## Groups
 
-- Click the stack-plus button or press **Shift–Command–N** to name a new group. If clips are selected, they move into it together. Right-clicking selected clips also offers **New Group with Selection**.
+- Click the stack-plus button in the footer or press **Shift–Command–N** to name a new group. If clips are selected, they move into it together. Right-clicking selected clips also offers **New Group with Selection**.
 - Groups share the same grid as loose clips. Each group shows one main image and up to two separate thumbnails, chosen automatically from its oldest references. Images fit without cropping or overlap. Additional clips appear as **+N** beneath the thumbnails; the name has no repeated count. Empty groups show a dashed placeholder, and groups with one to three clips have no number.
 - Click a group to open all its clips and see the total count. Arrow keys can select a group; **Space** or **Return** opens it. Click **Shelf** or press **Command–[** to return. Each location remembers its selection and scroll position during the app session, including trips through empty groups and tucking/reopening the Shelf. Moved or deleted images are removed from remembered selections. Groups have one level, so creating a group while browsing another creates a sibling group.
 - Drag one or more clips onto a group to move them, or use **Move to** in the context menu or **Move to Group** in the footer’s **…** menu. Inside a group, drop clips on the **Shelf** back button or choose **Shelf** from the move menu to take them out. Moving does not duplicate or re-encode images.
@@ -84,8 +84,8 @@ The search field searches image names and group names across the entire library.
 
 ## Interface and shortcuts
 
-- **Capture** and **Import** stay visible at the top of the Shelf. Drag its top grabber or title bar to move it; the sidebar button tucks it against the screen edge.
-- Shelf controls mirror when docked on the left. When floating clear of either edge, the title, main actions and footer controls center themselves. Alignment settles after a drag; search text and image order keep their usual reading direction.
+- The title, standard **Capture** button, **+** for importing images, and sidebar button share the top row. Drag the top grabber or title bar to move the Shelf; the sidebar button tucks it against the screen edge. The search field below shows its **Command–F** shortcut when empty.
+- Shelf controls mirror when docked on the left. When floating clear of either edge, the title sits on the left, the main actions on the right, and footer controls center themselves. Alignment settles after a drag; search text and image order keep their usual reading direction.
 - Image and group counts appear below search, above the grid; search results, selection counts and brief status messages share this line. It stays left-aligned on either screen edge, leaving the bottom corner clear for resizing. The default Shelf height includes this line and fits two complete rows of images and names. The grid uses a slim, automatically hiding overlay scrollbar.
 - Toolbar and action buttons show a subtle hover highlight that fades in and out. Disabled controls stay quiet, and Reduce Motion makes the highlight immediate.
 - Opening a group puts its name in the title bar. The back arrow returns to the Shelf and accepts dragged clips to move them out. The group menu contains renaming and **Open Floating Reference**.
