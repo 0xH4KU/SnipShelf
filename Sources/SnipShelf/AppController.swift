@@ -56,7 +56,7 @@ struct SnipShelfMain {
 }
 
 @MainActor @Observable
-final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
+final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuItemValidation {
     let store: ShelfStore
     let shelf: ShelfWindow
     let defaults: UserDefaults
@@ -82,7 +82,9 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
             updatePreview()
         }
     }
-    var referenceWindows: [ReferenceTarget: ShelfPanel] = [:]
+    var referenceWindows: [ReferenceTarget: ShelfPanel] = [:] {
+        didSet { updateReferenceWindowControls() }
+    }
     var referencePalettes: [UUID: PaletteModel] = [:]
     var referencesHidden = false
     var status: String?
@@ -187,6 +189,9 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
         menu.addItem(actionItem("Show Shelf", action: #selector(showAction)))
         menu.addItem(actionItem("Show/Hide References", action: #selector(toggleReferences)))
+        let closeReferences = actionItem("Close All Reference Windows", action: #selector(closeAllReferences), key: "w")
+        closeReferences.keyEquivalentModifierMask = [.command, .option]
+        menu.addItem(closeReferences)
         menu.addItem(actionItem("Import Images…", action: #selector(importAction)))
         menu.addItem(.separator())
         menu.addItem(actionItem("Settings…", action: #selector(settingsAction), key: ","))
@@ -234,6 +239,9 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
     func application(_ application: NSApplication, open urls: [URL]) { importURLs(urls) }
     private func actionItem(_ title: String, action: Selector, key: String = "") -> NSMenuItem {
         let item = NSMenuItem(title: title, action: action, keyEquivalent: key); item.target = self; return item
+    }
+    func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        menuItem.action != #selector(closeAllReferences) || !referenceWindows.isEmpty
     }
     @objc private func activatedApp(_ notification: Notification) {
         if let app = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication,
@@ -634,6 +642,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
         if alert.runModal() == .alertSecondButtonReturn { store.delete(Set(store.clips.map(\.id))) }
     }
     func handleKey(_ event: NSEvent) -> Bool {
+        if handleCloseAllReferencesKey(event) { return true }
         let command = event.modifierFlags.contains(.command)
         if command && event.charactersIgnoringModifiers?.lowercased() == "f" {
             searchFocusRequest += 1
@@ -733,6 +742,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
         if let clip = adjacentPreview(delta) { previewClip = clip }
     }
     func handlePreviewKey(_ event: NSEvent) -> Bool {
+        if handleCloseAllReferencesKey(event) { return true }
         if event.keyCode == 53, event.modifierFlags.intersection([.command, .control, .option]).isEmpty,
            let palette = previewPalette, palette.settingsPresented {
             palette.settingsPresented = false
@@ -772,7 +782,10 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     func windowDidMove(_ notification: Notification) { persistReferenceFrame(notification) }
-    func windowDidResize(_ notification: Notification) { persistReferenceFrame(notification) }
+    func windowDidResize(_ notification: Notification) {
+        persistReferenceFrame(notification)
+        if let window = notification.object as? NSWindow { updateReferenceWindowControls(for: window) }
+    }
 
     func installHotKeyHandler() {
         var type = EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))

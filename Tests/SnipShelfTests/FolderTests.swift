@@ -439,6 +439,188 @@ final class FolderTests: XCTestCase {
 }
 
 extension FolderTests {
+    @MainActor func testCloseAllReferencesKeepsClipsAndWindowPositions() async throws {
+        _ = NSApplication.shared
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let suite = "org.snipshelf.tests." + UUID().uuidString
+        let preferences = UserDefaults(suiteName: suite)!
+        let store = ShelfStore(root: root)
+        let image = try SnipShelfTests().image(width: 240, height: 160)
+        let a = try store.add(image, name: "First"), b = try store.add(image, name: "Second")
+        let group = try store.createFolder(name: "References", including: [a.id])
+        let originals = store.clips
+        let app = AppController(store: store, preferences: preferences)
+        app.shelf.install(content: EmptyView(), key: app.handleKey)
+        defer {
+            app.closeAllReferences(); app.previewClip = nil; app.shelf.panel.close()
+            try? FileManager.default.removeItem(at: root)
+            preferences.removePersistentDomain(forName: suite)
+        }
+        let action = NSMenuItem(title: "Close All Reference Windows", action: #selector(AppController.closeAllReferences), keyEquivalent: "w")
+        XCTAssertFalse(app.validateMenuItem(action))
+        func closeButton(_ panel: ShelfPanel) -> ReferenceCloseAllButton? {
+            panel.titlebarAccessoryViewControllers.compactMap { ($0.view as? ReferenceTitlebarControls)?.button }.first
+        }
+        app.openReference(.group(group.id))
+        let groupPanel = try XCTUnwrap(app.referenceWindows[.group(group.id)])
+        XCTAssertNil(closeButton(groupPanel), "One reference needs only the native close button")
+        app.openReference(.clip(a.id))
+        XCTAssertEqual(closeButton(groupPanel)?.title, "Close All · 2")
+        app.closeReference(.clip(a.id))
+        XCTAssertNil(closeButton(groupPanel), "The titlebar must reclaim its space when only one reference remains")
+        app.openReference(.group(group.id)); app.openReference(.clip(a.id))
+        let card = ShelfCollection.CardView(frame: CGRect(x: 20, y: 40, width: 148, height: 173))
+        card.picture.image = store.thumbnail(for: b)
+        card.pinButton.app = app; card.pinButton.referenceTarget = .clip(b.id)
+        app.shelf.panel.contentView!.addSubview(card)
+        card.pinButton.performClick(nil)
+        let windows = app.referenceWindows
+        let frames = windows.mapValues { $0.referenceTransition?.destinationFrame ?? $0.frame }
+        XCTAssertTrue(windows.values.allSatisfy { closeButton($0)?.title == "Close All · 3" })
+        XCTAssertNotNil(windows[.clip(b.id)]?.referenceTransition)
+        app.previewClip = a
+        app.toggleReferences()
+        XCTAssertTrue(app.referencesHidden)
+        XCTAssertTrue(app.validateMenuItem(action))
+        XCTAssertTrue(NSApp.sendAction(#selector(AppController.closeAllReferences), to: app, from: action))
+        XCTAssertTrue(app.referenceWindows.isEmpty, "Close hidden references as well as visible ones")
+        XCTAssertTrue(app.referencePalettes.isEmpty)
+        XCTAssertFalse(app.referencesHidden)
+        XCTAssertFalse(app.validateMenuItem(action))
+        XCTAssertTrue(windows.values.allSatisfy { !$0.isVisible })
+        for (target, frame) in frames {
+            XCTAssertEqual(NSRectFromString(try XCTUnwrap(preferences.string(forKey: target.frameKey))), frame)
+        }
+        try await Task.sleep(for: .milliseconds(350))
+        XCTAssertFalse(NSApp.windows.contains { $0 is ReferenceLiftWindow && $0.isVisible }, "Closing during expansion must also dismiss its preview")
+        XCTAssertTrue(app.referenceWindows.isEmpty, "Opening animations must not reopen closed windows")
+        XCTAssertEqual(card.alphaValue, 1)
+        XCTAssertEqual(store.clips, originals)
+        XCTAssertTrue(originals.allSatisfy { FileManager.default.fileExists(atPath: store.url(for: $0).path) })
+        XCTAssertEqual(app.previewClip?.id, a.id)
+        XCTAssertTrue(app.shelf.panel.isVisible)
+
+        let editor = NSTextView(frame: CGRect(x: 0, y: 0, width: 200, height: 30))
+        app.shelf.panel.contentView!.addSubview(editor)
+        for source in 0..<4 {
+            app.openReference(.group(group.id)); app.openReference(.clip(a.id))
+            let pin = try XCTUnwrap(app.referenceWindows[.clip(a.id)])
+            XCTAssertEqual(pin.frame, frames[.clip(a.id)])
+            let event = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [.command, .option], timestamp: 0,
+                windowNumber: pin.windowNumber, context: nil, characters: "w", charactersIgnoringModifiers: "w", isARepeat: false, keyCode: 13))
+            switch source {
+            case 0:
+                XCTAssertTrue(app.shelf.panel.makeFirstResponder(editor))
+                XCTAssertTrue(app.shelf.panel.performKeyEquivalent(with: event), "Close all must work while editing Shelf search text")
+            case 1: XCTAssertTrue(pin.performKeyEquivalent(with: event))
+            case 2: XCTAssertTrue(app.handlePreviewKey(event))
+            default:
+                app.shelf.collapse()
+                try await Task.sleep(for: .milliseconds(250))
+                let button = try XCTUnwrap(closeButton(pin))
+                XCTAssertEqual(button.title, "Close All · 2")
+                XCTAssertTrue(button.acceptsFirstMouse(for: nil), "A floating window's button must work on the first click")
+                pin.setContentSize(CGSize(width: 220, height: 300))
+                try await Task.sleep(for: .milliseconds(60))
+                pin.layoutIfNeeded()
+                pin.contentView?.superview?.layoutSubtreeIfNeeded()
+                let buttonFrame = button.convert(button.bounds, to: nil)
+                let close = try XCTUnwrap(pin.standardWindowButton(.closeButton))
+                XCTAssertGreaterThanOrEqual(buttonFrame.minY, pin.contentLayoutRect.maxY, "The action belongs in the titlebar")
+                XCTAssertLessThanOrEqual(buttonFrame.maxX, pin.frame.width)
+                XCTAssertGreaterThan(buttonFrame.minX, close.convert(close.bounds, to: nil).maxX, "Both close actions must fit in a narrow window")
+                let controls = try XCTUnwrap(button.superview as? ReferenceTitlebarControls)
+                XCTAssertLessThanOrEqual(controls.title.frame.maxX, button.frame.minX, "Long names must truncate before the action")
+                XCTAssertTrue(app.shelf.collapsed)
+                button.performClick(nil)
+            }
+            XCTAssertTrue(app.referenceWindows.isEmpty)
+            XCTAssertEqual(app.previewClip?.id, a.id)
+            XCTAssertTrue(app.shelf.panel.isVisible)
+        }
+        app.closeAllReferences() // Repeating the action with no windows is harmless.
+    }
+
+    @MainActor func testReferenceCascadeStaysBesideShelfAtScreenEdges() {
+        let visible = CGRect(x: -1400, y: -60, width: 1400, height: 900)
+        let minimum = CGSize(width: 300, height: 240)
+        let size = CGSize(width: 340, height: 442)
+        for shelf in [
+            CGRect(x: -1380, y: 240, width: 340, height: 440),
+            CGRect(x: -360, y: 240, width: 340, height: 440),
+            CGRect(x: -1360, y: 500, width: 1320, height: 300),
+            CGRect(x: -1360, y: -20, width: 1320, height: 300)
+        ] {
+            var opened: [CGRect] = []
+            for _ in 0..<8 {
+                let frame = AppController.initialReferenceFrame(size: size, minimumSize: minimum, beside: shelf, in: visible, occupied: opened)
+                XCTAssertTrue(visible.contains(frame), "Cascades must stay on their display, including negative screen coordinates")
+                XCTAssertFalse(frame.intersects(shelf.insetBy(dx: -11, dy: -11)), "Keep a gap even when cascading toward a screen edge")
+                XCTAssertFalse(opened.contains(frame), "Available cascade positions must not be skipped or reused")
+                opened.append(frame)
+            }
+            let vacant = opened.remove(at: 2)
+            XCTAssertEqual(AppController.initialReferenceFrame(size: size, minimumSize: minimum, beside: shelf, in: visible, occupied: opened), vacant)
+        }
+        let smallScreen = CGRect(x: 0, y: 0, width: 760, height: 800)
+        let shelf = CGRect(x: 210, y: 300, width: 340, height: 200)
+        let compact = AppController.initialReferenceFrame(size: size, minimumSize: minimum, beside: shelf, in: smallScreen, occupied: [])
+        XCTAssertTrue(smallScreen.contains(compact))
+        XCTAssertFalse(compact.intersects(shelf))
+        XCTAssertGreaterThanOrEqual(compact.width, minimum.width, "Prefer usable space above or below over an excessively narrow side")
+        XCTAssertGreaterThanOrEqual(compact.height, minimum.height)
+    }
+
+    @MainActor func testNewReferencesOpenBesideShelfAndCascade() async throws {
+        _ = NSApplication.shared
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let suite = "org.snipshelf.tests." + UUID().uuidString
+        let preferences = UserDefaults(suiteName: suite)!
+        let store = ShelfStore(root: root)
+        let groups = try (0..<3).map { try store.createFolder(name: "Reference \($0)") }
+        let app = AppController(store: store, preferences: preferences)
+        app.shelf.install(content: EmptyView(), key: { _ in false })
+        defer {
+            for panel in app.referenceWindows.values { panel.close() }
+            app.shelf.panel.close()
+            try? FileManager.default.removeItem(at: root)
+            preferences.removePersistentDomain(forName: suite)
+        }
+        let visible = app.shelf.panel.screen!.visibleFrame
+        let shelfFrame = CGRect(x: visible.minX + 20, y: visible.maxY - 460, width: 340, height: 440)
+        app.shelf.panel.setFrame(shelfFrame, display: true)
+        app.openReference(.group(groups[0].id)) // Menus, toolbar buttons and keyboard shortcuts share this entry.
+        let first = try XCTUnwrap(app.referenceWindows[.group(groups[0].id)])
+        XCTAssertFalse(first.frame.intersects(shelfFrame), "A new reference must leave the Shelf uncovered")
+
+        let card = ShelfCollection.CardView(frame: CGRect(x: 20, y: 40, width: 148, height: 173))
+        card.folderID = groups[1].id
+        card.pinButton.app = app
+        card.pinButton.referenceTarget = .group(groups[1].id)
+        app.shelf.panel.contentView!.addSubview(card)
+        card.pinButton.performClick(nil)
+        let second = try XCTUnwrap(app.referenceWindows[.group(groups[1].id)])
+        let secondDestination = second.referenceTransition?.destinationFrame ?? second.frame
+        app.openReference(.group(groups[2].id))
+        let third = try XCTUnwrap(app.referenceWindows[.group(groups[2].id)])
+        let destinations = [first.frame, secondDestination, third.frame]
+        for frame in destinations {
+            XCTAssertTrue(visible.contains(frame))
+            XCTAssertGreaterThanOrEqual(frame.minX, shelfFrame.maxX + 12)
+        }
+        for (earlier, later) in zip(destinations, destinations.dropFirst()) {
+            XCTAssertGreaterThan(later.minX, earlier.minX, "Each new reference should reveal the previous window's edge")
+            XCTAssertLessThan(later.maxY, earlier.maxY, "Use the destination of a window that is still opening")
+        }
+        try await Task.sleep(for: .milliseconds(350))
+        XCTAssertEqual(second.frame, secondDestination)
+        let remembered = third.frame.offsetBy(dx: -20, dy: 12)
+        third.setFrame(remembered, display: false)
+        app.closeReference(.group(groups[2].id))
+        app.openReference(.group(groups[2].id))
+        XCTAssertEqual(app.referenceWindows[.group(groups[2].id)]?.frame, remembered, "Reopening must respect the user's saved position")
+    }
+
     @MainActor func testGroupAndImageReferenceWindowsStayIndependent() async throws {
         _ = NSApplication.shared
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)

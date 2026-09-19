@@ -68,22 +68,60 @@ extension AppController {
         content.sizingOptions = []
         panel.contentView = content
         panel.onKey = { [weak self] in self?.handleReferenceKey($0, target: target) ?? false }
-        let screen = shelf.panel?.screen ?? NSScreen.main ?? NSScreen.screens[0]
-        let offset = CGFloat(referenceWindows.count % 8) * 28
-        var frame = panel.frame
-        frame.origin = CGPoint(x: screen.visibleFrame.minX + 36 + offset, y: screen.visibleFrame.maxY - frame.height - 36 - offset)
-        if let lift {
-            let visible = NSScreen.screens.first { $0.frame.intersects(lift.sourceFrame) }?.visibleFrame ?? screen.visibleFrame
-            let beside = lift.sourceWindowFrame.maxX + 12
-            frame.origin = CGPoint(x: beside + frame.width <= visible.maxX ? beside : lift.sourceWindowFrame.minX - frame.width - 12,
-                                   y: lift.sourceFrame.maxY - frame.height)
+        let anchor = shelf.panel?.frame ?? lift?.sourceWindowFrame
+        let screen = anchor.flatMap { frame in
+            NSScreen.screens.first { $0.frame.contains(CGPoint(x: frame.midX, y: frame.midY)) }
+        } ?? NSScreen.main ?? NSScreen.screens[0]
+        var frame = CGRect(origin: screen.visibleFrame.origin, size: panel.frame.size)
+        if let saved = defaults.string(forKey: target.frameKey) {
+            frame = NSRectFromString(saved)
+        } else if center == nil {
+            frame = Self.initialReferenceFrame(size: frame.size, minimumSize: panel.minSize, beside: anchor, in: screen.visibleFrame,
+                occupied: referenceWindows.values.map { $0.referenceTransition?.destinationFrame ?? $0.frame })
         }
-        if let saved = defaults.string(forKey: target.frameKey) { frame = NSRectFromString(saved) }
         let visible = NSScreen.screens.first { $0.visibleFrame.intersects(frame) }?.visibleFrame ?? screen.visibleFrame
-        referenceWindows[target] = panel
         panel.setFrame(ShelfWindow.constrainedFrame(frame, to: visible), display: false)
         panel.delegate = self
+        referenceWindows[target] = panel
         presentReference(panel, from: lift, at: center)
+    }
+
+    static func initialReferenceFrame(size: CGSize, minimumSize: CGSize, beside anchor: CGRect?, in visible: CGRect, occupied: [CGRect]) -> CGRect {
+        let gap: CGFloat = 12, step: CGFloat = 28
+        let regions: [CGRect]
+        if let anchor, anchor.intersects(visible) {
+            let shelf = anchor.intersection(visible)
+            regions = [
+                CGRect(x: shelf.maxX + gap, y: visible.minY, width: visible.maxX - shelf.maxX - gap, height: visible.height),
+                CGRect(x: visible.minX, y: visible.minY, width: shelf.minX - visible.minX - gap, height: visible.height),
+                CGRect(x: visible.minX, y: visible.minY, width: visible.width, height: shelf.minY - visible.minY - gap),
+                CGRect(x: visible.minX, y: shelf.maxY + gap, width: visible.width, height: visible.maxY - shelf.maxY - gap)
+            ].filter { $0.size.width > 0 && $0.size.height > 0 }
+        } else { regions = [visible] }
+        // Constrain inside free space, so screen-edge clamping cannot push a window back over the Shelf.
+        let usable = regions.filter { $0.width >= minimumSize.width && $0.height >= minimumSize.height }
+        let region = regions.first { $0.width >= size.width && $0.height >= size.height } ?? (usable.isEmpty ? regions : usable).max {
+            min($0.width, size.width) * min($0.height, size.height) < min($1.width, size.width) * min($1.height, size.height)
+        } ?? visible
+        var frame = CGRect(x: anchor?.minX ?? visible.minX + 36, y: (anchor?.maxY ?? visible.maxY - 36) - size.height,
+                           width: size.width, height: size.height)
+        if let anchor {
+            if region.minX >= anchor.maxX { frame.origin.x = region.minX }
+            else if region.maxX <= anchor.minX { frame.origin.x = region.maxX - frame.width }
+            if region.maxY <= anchor.minY { frame.origin.y = region.maxY - frame.height }
+            else if region.minY >= anchor.maxY { frame.origin.y = region.minY }
+        }
+        frame = ShelfWindow.constrainedFrame(frame, to: region)
+        let left = frame.minX - region.minX, right = region.maxX - frame.maxX
+        let below = frame.minY - region.minY, above = region.maxY - frame.maxY
+        let xSteps = Int(max(left, right) / step), ySteps = Int(max(below, above) / step)
+        let candidates = (0...max(xSteps, ySteps)).map { index in
+            frame.offsetBy(dx: CGFloat(min(index, xSteps)) * step * (right >= left ? 1 : -1),
+                           dy: CGFloat(min(index, ySteps)) * step * (below >= above ? -1 : 1))
+        }
+        return candidates.first { candidate in
+            !occupied.contains { abs($0.minX - candidate.minX) < step / 2 && abs($0.maxY - candidate.maxY) < step / 2 }
+        } ?? candidates[occupied.count % candidates.count]
     }
 
     private func presentReference(_ panel: ShelfPanel, from lift: ReferenceLiftWindow?, at center: CGPoint?) {
@@ -98,6 +136,49 @@ extension AppController {
     }
 
     func closeReference(_ target: ReferenceTarget) { referenceWindows[target]?.close() }
+
+    func updateReferenceWindowControls(for window: NSWindow? = nil) {
+        let count = referenceWindows.count
+        for panel in referenceWindows.values where window == nil || panel === window {
+            let index = panel.titlebarAccessoryViewControllers.firstIndex { $0.view is ReferenceTitlebarControls }
+            guard count > 1 else {
+                if let index { panel.removeTitlebarAccessoryViewController(at: index) }
+                panel.titleVisibility = .visible
+                continue
+            }
+            let controls = index.flatMap { panel.titlebarAccessoryViewControllers[$0].view as? ReferenceTitlebarControls }
+                ?? ReferenceTitlebarControls(app: self)
+            let button = controls.button
+            controls.title.stringValue = panel.title
+            button.title = "Close All · \(count)"
+            button.toolTip = "Close all \(count) reference windows (⌥⌘W)"
+            button.setAccessibilityLabel("Close all \(count) reference windows")
+            button.sizeToFit()
+            button.frame.size.width += 12
+            let leading = panel.standardWindowButton(.zoomButton).map { $0.convert($0.bounds, to: nil).maxX + 12 } ?? 80
+            controls.setFrameSize(CGSize(width: max(0, panel.frame.width - leading), height: 32))
+            controls.needsLayout = true
+            panel.titleVisibility = .hidden
+            if index == nil {
+                let accessory = NSTitlebarAccessoryViewController()
+                accessory.layoutAttribute = .right
+                accessory.view = controls
+                panel.addTitlebarAccessoryViewController(accessory)
+            }
+        }
+    }
+
+    @objc func closeAllReferences() {
+        // Closing calls the delegate to save placement and remove each window and its palette.
+        for panel in Array(referenceWindows.values) { panel.close() }
+    }
+
+    func handleCloseAllReferencesKey(_ event: NSEvent) -> Bool {
+        guard event.modifierFlags.intersection([.command, .option, .control, .shift]) == [.command, .option],
+              event.charactersIgnoringModifiers?.lowercased() == "w" else { return false }
+        closeAllReferences()
+        return true
+    }
 
     /// Returns false only for a click. Window gestures never start a pasteboard drag or trigger a file drop.
     func trackReferenceDrag(_ target: ReferenceTarget, from view: NSView, event: NSEvent) -> Bool {
@@ -174,6 +255,7 @@ extension AppController {
     }
 
     func handleReferenceKey(_ event: NSEvent, target: ReferenceTarget) -> Bool {
+        if handleCloseAllReferencesKey(event) { return true }
         let command = event.modifierFlags.contains(.command)
         let key = event.charactersIgnoringModifiers?.lowercased()
         if event.keyCode == 53, event.modifierFlags.intersection([.command, .control, .option]).isEmpty,
@@ -225,6 +307,7 @@ extension AppController {
                     if let title = target.title(in: self.store) { panel.title = title }
                     else { panel.close() }
                 }
+                self.updateReferenceWindowControls()
                 self.observeReferenceChanges()
             }
         }
@@ -238,6 +321,36 @@ extension AppController {
             item.setData(try Data(contentsOf: url), forType: .png)
             return item
         } catch { store.message = error.localizedDescription; return nil }
+    }
+}
+
+final class ReferenceCloseAllButton: NSButton {
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+}
+
+final class ReferenceTitlebarControls: NSView {
+    let title = NSTextField(labelWithString: "")
+    let button: ReferenceCloseAllButton
+
+    init(app: AppController) {
+        button = ReferenceCloseAllButton(title: "", target: app, action: #selector(AppController.closeAllReferences))
+        super.init(frame: .zero)
+        wantsLayer = true; layer?.masksToBounds = true
+        title.font = .systemFont(ofSize: 13, weight: .semibold)
+        title.lineBreakMode = .byTruncatingTail
+        title.usesSingleLineMode = true
+        button.bezelStyle = .accessoryBarAction
+        button.controlSize = .small
+        button.font = .monospacedDigitSystemFont(ofSize: 11, weight: .medium)
+        addSubview(title); addSubview(button)
+    }
+    required init?(coder: NSCoder) { fatalError() }
+
+    override func layout() {
+        super.layout()
+        button.frame = CGRect(x: bounds.width - button.frame.width - 6, y: (bounds.height - 24) / 2,
+                              width: button.frame.width, height: 24)
+        title.frame = CGRect(x: 0, y: (bounds.height - 18) / 2, width: max(0, button.frame.minX - 8), height: 18)
     }
 }
 

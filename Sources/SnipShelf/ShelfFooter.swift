@@ -55,6 +55,7 @@ struct ShelfFooter: View {
                     Button(action: app.toggleReferences) {
                         Label { Text(app.referencesHidden ? "Show Reference Windows" : "Hide Reference Windows") } icon: { Image(nsImage: ReferencePinButton.icon) }
                     }
+                    Button("Close All Reference Windows", systemImage: "xmark.rectangle", action: app.closeAllReferences)
                     Divider()
                 }
                 Button("Paste Image", systemImage: "document.on.clipboard", action: app.paste)
