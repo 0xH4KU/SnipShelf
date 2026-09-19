@@ -192,6 +192,35 @@ final class SnipShelfTests: XCTestCase {
         try await Task.sleep(for: .milliseconds(300))
         XCTAssertFalse(shelf.collapsed)
         XCTAssertEqual(shelf.panel.frame.width, initial.width, accuracy: 1)
+        let visible = shelf.screen.visibleFrame
+        for side in ["left", "right", "floating"] {
+            let x = side == "left" ? visible.minX : (side == "right" ? visible.maxX - 340 : visible.midX - 170)
+            let frame = CGRect(x: x, y: visible.maxY - 480, width: 340, height: 360)
+            shelf.panel.setFrame(frame, display: true)
+            shelf.persist()
+            XCTAssertEqual(shelf.dockedEdge, side == "floating" ? nil : side)
+            let direction: CGFloat = side == "right" ? -1 : 1
+            shelf.beginMove(at: .zero)
+            shelf.resize(to: CGPoint(x: 70 * direction, y: -60))
+            XCTAssertEqual(shelf.panel.frame.width, 410, accuracy: 1)
+            XCTAssertEqual(shelf.panel.frame.height, 420, accuracy: 1)
+            XCTAssertEqual(shelf.panel.frame.maxY, frame.maxY, accuracy: 1)
+            XCTAssertEqual(side == "right" ? shelf.panel.frame.maxX : shelf.panel.frame.minX,
+                           side == "right" ? frame.maxX : frame.minX, accuracy: 1)
+            shelf.resize(to: CGPoint(x: -10000 * direction, y: 10000))
+            XCTAssertEqual(shelf.panel.frame.size, ShelfWindow.minimumSize)
+            shelf.resize(to: CGPoint(x: 10000 * direction, y: -10000))
+            XCTAssertTrue(visible.insetBy(dx: -1, dy: -1).contains(shelf.panel.frame), "Resizing must stay within the usable screen")
+            shelf.resize(to: CGPoint(x: 70 * direction, y: -60))
+            shelf.endMove(wasClick: false)
+            XCTAssertFalse(shelf.collapsed)
+            XCTAssertNil(shelf.snapEdge)
+            XCTAssertEqual(NSSizeFromString(try XCTUnwrap(defaults.string(forKey: "shelfSize"))), shelf.panel.frame.size)
+        }
+        let restored = ShelfWindow(defaults: defaults)
+        restored.install(content: EmptyView(), key: { _ in false })
+        defer { restored.panel.close() }
+        XCTAssertEqual(restored.panel.frame, shelf.panel.frame, "Manual dimensions survive reopening")
     }
 
 }

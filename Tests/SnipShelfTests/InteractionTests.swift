@@ -619,8 +619,15 @@ final class InteractionTests: XCTestCase {
         let shelf = ShelfWindow(defaults: preferences)
         shelf.install(content: EmptyView(), key: { _ in false })
         defer { shelf.panel.close() }
+        XCTAssertNil(shelf.dockedEdge, "A floating Shelf has no directional alignment")
         for edge in ["left", "right"] {
             shelf.edge = edge; shelf.collapse()
+            try await Task.sleep(for: .milliseconds(260))
+            XCTAssertEqual(shelf.dockedEdge, edge)
+            shelf.expand()
+            try await Task.sleep(for: .milliseconds(260))
+            XCTAssertEqual(shelf.dockedEdge, edge, "Opening an edge tab retains its alignment")
+            shelf.collapse()
             try await Task.sleep(for: .milliseconds(260))
             let tab = shelf.panel.frame
             let start = CGPoint(x: tab.midX, y: tab.midY)
@@ -636,8 +643,10 @@ final class InteractionTests: XCTestCase {
             XCTAssertNil(shelf.snapEdge, "A short pull must not immediately tuck itself again")
             shelf.move(to: CGPoint(x: opened.x + direction * 70, y: opened.y - 10))
             XCTAssertEqual(shelf.panel.frame.minX, first.minX + direction * 70, accuracy: 0.1)
+            XCTAssertEqual(shelf.dockedEdge, edge, "Controls must not move under the pointer while dragging")
             shelf.endMove(wasClick: false)
             XCTAssertFalse(shelf.collapsed)
+            XCTAssertNil(shelf.dockedEdge, "Pulling clear of the edge centers the controls")
             XCTAssertFalse(preferences.bool(forKey: "shelfCollapsed"))
             for width: CGFloat in [300, 450, 600] {
                 shelf.panel.setContentSize(CGSize(width: width, height: 440))
@@ -657,8 +666,13 @@ final class InteractionTests: XCTestCase {
                 shelf.endMove(wasClick: false)
                 XCTAssertFalse(shelf.collapsed, "Retreating below one third must cancel docking")
                 XCTAssertTrue(visible.contains(shelf.panel.frame))
+                XCTAssertEqual(shelf.dockedEdge, edge, "Clamping back to an edge restores its alignment")
             }
         }
+        let restored = ShelfWindow(defaults: preferences)
+        restored.install(content: EmptyView(), key: { _ in false })
+        XCTAssertEqual(restored.dockedEdge, "right", "Restoration derives alignment from the saved frame")
+        restored.panel.close()
     }
 
     @MainActor func testPreviewNavigationAndKeyboardStayInPreview() async throws {
@@ -888,6 +902,25 @@ final class InteractionTests: XCTestCase {
                                  size: CGSize(width: 340, height: 440), name: "docking-" + edge + "-" + suffix, appearance: appearance)
             }
             app.shelf.snapEdge = nil
+            let visible = app.shelf.screen.visibleFrame
+            for (placement, x) in [("left", visible.minX), ("right", visible.maxX - app.shelf.panel.frame.width),
+                                   ("floating", visible.midX - app.shelf.panel.frame.width / 2)] {
+                app.shelf.panel.setFrameOrigin(CGPoint(x: x, y: app.shelf.panel.frame.minY))
+                app.shelf.persist()
+                let shelf = VStack(spacing: 0) {
+                    ShelfHeader(app: app)
+                    Spacer()
+                    ShelfFooter(app: app)
+                }
+                    .background(appearance == .darkAqua ? Color(white: 0.12) : Color(white: 0.96))
+                    .environment(\.colorScheme, appearance == .darkAqua ? .dark : .light)
+                try await render(NSHostingView(rootView: shelf), size: CGSize(width: 340, height: 440),
+                                 name: "shelf-placement-" + placement + "-" + suffix, appearance: appearance)
+                if placement == "floating" {
+                    try await render(NSHostingView(rootView: shelf), size: CGSize(width: 290, height: 270),
+                                     name: "shelf-placement-floating-small-" + suffix, appearance: appearance)
+                }
+            }
         }
         app.previewClip = store.clips[0]
         try await Task.sleep(for: .milliseconds(300))

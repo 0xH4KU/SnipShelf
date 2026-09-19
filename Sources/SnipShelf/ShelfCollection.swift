@@ -25,6 +25,8 @@ struct ShelfCollection: NSViewRepresentable {
                                                name: NSView.boundsDidChangeNotification, object: clipView)
         scroll.contentView = clipView
         scroll.hasVerticalScroller = true
+        scroll.scrollerStyle = .overlay
+        scroll.verticalScroller?.controlSize = .small
         scroll.autohidesScrollers = true
         let collection = CollectionView()
         collection.app = app

@@ -8,6 +8,7 @@ struct ShelfView: View {
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.colorSchemeContrast) private var contrast
+    @State private var hoveringResize = false
     private var store: ShelfStore { app.store }
     var body: some View {
         GlassEffectContainer(spacing: 12) {
@@ -88,10 +89,29 @@ struct ShelfView: View {
                 }.font(.caption).padding(10).background(Color.orange.opacity(0.12))
                     .accessibilityValue("\(pending.width) by \(pending.height) pixels")
             }
-            if !store.visibleClips.isEmpty || (!store.isSearching && store.currentFolderID == nil && !store.folders.isEmpty) { grid }
-            else { emptyState }
+            ZStack {
+                grid
+                if store.visibleClips.isEmpty && (store.isSearching || store.currentFolderID != nil || store.folders.isEmpty) { emptyState }
+            }
             Divider().padding(.horizontal, 14)
             ShelfFooter(app: app)
+        }
+        .overlay(alignment: app.shelf.dockedEdge == "right" ? .bottomLeading : .bottomTrailing) {
+            Path { path in
+                for inset: CGFloat in [7, 12, 17] {
+                    path.move(to: CGPoint(x: inset, y: 19))
+                    path.addLine(to: CGPoint(x: 19, y: inset))
+                }
+            }
+            .stroke(.secondary.opacity(hoveringResize || contrast == .increased ? 0.8 : 0.4), style: StrokeStyle(lineWidth: 1.5, lineCap: .round))
+            .frame(width: 24, height: 24)
+            .scaleEffect(x: app.shelf.dockedEdge == "right" ? -1 : 1, y: 1)
+            .allowsHitTesting(false)
+            .background { ShelfMoveHandle(shelf: app.shelf, resizing: true) }
+            .onHover { hoveringResize = $0 }
+            .animation(reduceMotion ? nil : .easeOut(duration: 0.14), value: hoveringResize)
+            .help("Drag to resize your shelf")
+            .padding(4)
         }
     }
     private var emptyState: some View {

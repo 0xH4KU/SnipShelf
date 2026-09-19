@@ -25,12 +25,14 @@ final class ShelfPanel: NSPanel {
 @MainActor @Observable
 final class ShelfWindow: NSObject, NSWindowDelegate {
     static let tabSize = CGSize(width: 24, height: 88)
+    static let minimumSize = CGSize(width: 300, height: 280)
     var collapsed = false
     var edge = "right"
+    private(set) var dockedEdge: String?
     var snapEdge: String?
     var dropTargeted = false
     var panel: ShelfPanel!
-    private var expandedSize = CGSize(width: 340, height: 440)
+    private var expandedSize = CGSize(width: 340, height: 560)
     private var timer: Timer?
     var isAnimating: Bool { timer != nil }
     private var hoverTask: Task<Void, Never>?
@@ -44,9 +46,10 @@ final class ShelfWindow: NSObject, NSWindowDelegate {
     func install(content: some View, key: @escaping (NSEvent) -> Bool) {
         let screen = NSScreen.main ?? NSScreen.screens[0]
         let usable = screen.visibleFrame
+        let hasSavedSize = defaults.object(forKey: "shelfSize") != nil || defaults.object(forKey: "shelfFrame") != nil
         if let size = defaults.string(forKey: "shelfSize") { expandedSize = NSSizeFromString(size) }
-        expandedSize.width = min(usable.width, max(300, expandedSize.width))
-        expandedSize.height = min(usable.height, max(280, expandedSize.height))
+        expandedSize.width = min(usable.width, max(Self.minimumSize.width, expandedSize.width))
+        expandedSize.height = min(usable.height, max(Self.minimumSize.height, expandedSize.height))
         var frame = CGRect(x: usable.maxX - expandedSize.width - 20, y: usable.midY - expandedSize.height / 2,
                            width: expandedSize.width, height: expandedSize.height)
         if let saved = defaults.string(forKey: "shelfFrame") { frame = NSRectFromString(saved) }
@@ -69,7 +72,11 @@ final class ShelfWindow: NSObject, NSWindowDelegate {
         applySizing()
         if collapsed { panel.setFrame(dockedFrame(collapsed: true), display: true) }
         recoverScreen()
+        persist()
         panel.orderFrontRegardless()
+        if !hasSavedSize {
+            DispatchQueue.main.async { [weak self] in self?.restoreTwoRows(animated: false) }
+        }
         NotificationCenter.default.addObserver(self, selector: #selector(screensChanged), name: NSApplication.didChangeScreenParametersNotification, object: nil)
     }
     var screen: NSScreen {
@@ -77,7 +84,7 @@ final class ShelfWindow: NSObject, NSWindowDelegate {
             ?? panel.screen ?? NSScreen.main ?? NSScreen.screens[0]
     }
     private func applySizing() {
-        panel.minSize = collapsed ? Self.tabSize : CGSize(width: 300, height: 280)
+        panel.minSize = collapsed ? Self.tabSize : Self.minimumSize
         if collapsed { panel.styleMask.remove(.resizable) } else { panel.styleMask.insert(.resizable) }
     }
     private func dockedFrame(collapsed: Bool) -> CGRect {
@@ -92,7 +99,7 @@ final class ShelfWindow: NSObject, NSWindowDelegate {
         let wasAnimating = timer != nil
         timer?.invalidate(); timer = nil
         if !wasAnimating { expandedSize = panel.frame.size }
-        collapsed = true; temporarilyExpanded = false
+        collapsed = true; dockedEdge = edge; temporarilyExpanded = false
         applySizing(); transition(to: dockedFrame(collapsed: true))
     }
     func expand() {
@@ -106,7 +113,7 @@ final class ShelfWindow: NSObject, NSWindowDelegate {
     private func transition(to target: CGRect) {
         timer?.invalidate()
         if NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
-            panel.setFrame(target, display: true); applySizing(); persist(); timer = nil; return
+            timer = nil; panel.setFrame(target, display: true); applySizing(); persist(); return
         }
         let start = panel.frame
         let begun = Date()
@@ -162,6 +169,36 @@ final class ShelfWindow: NSObject, NSWindowDelegate {
         else if let snapEdge { edge = snapEdge; self.snapEdge = nil; collapse() }
         else { recoverScreen(); persist() }
     }
+    func resize(to point: CGPoint) {
+        guard moving, !collapsed else { return }
+        let visible = screen.visibleFrame
+        let fromLeft = dockedEdge == "right"
+        let availableWidth = fromLeft ? frameStart.maxX - visible.minX : visible.maxX - frameStart.minX
+        let width = min(availableWidth, max(Self.minimumSize.width,
+            frameStart.width + (point.x - dragStart.x) * (fromLeft ? -1 : 1)))
+        let height = min(frameStart.maxY - visible.minY, max(Self.minimumSize.height,
+            frameStart.height - (point.y - dragStart.y)))
+        panel.setFrame(CGRect(x: fromLeft ? frameStart.maxX - width : frameStart.minX,
+                              y: frameStart.maxY - height, width: width, height: height), display: true)
+    }
+    func restoreTwoRows(animated: Bool = true) {
+        guard !collapsed, !moving, let content = panel?.contentView else { return }
+        content.layoutSubtreeIfNeeded()
+        func collection(in view: NSView) -> ShelfCollection.CollectionView? {
+            (view as? ShelfCollection.CollectionView) ?? view.subviews.lazy.compactMap { collection(in: $0) }.first
+        }
+        guard let grid = collection(in: content), let scroll = grid.enclosingScrollView,
+              let layout = grid.collectionViewLayout as? NSCollectionViewFlowLayout else { return }
+        grid.updateLayout(for: scroll.contentView.bounds.width)
+        let viewportHeight = 2 * layout.itemSize.height + layout.minimumLineSpacing + layout.sectionInset.top + layout.sectionInset.bottom
+        let frame = panel.frame
+        let height = max(Self.minimumSize.height, ceil(frame.height - scroll.contentView.bounds.height + viewportHeight))
+        let target = Self.constrainedFrame(CGRect(x: frame.minX, y: frame.maxY - height, width: frame.width, height: height),
+                                           to: screen.visibleFrame)
+        expandedSize = target.size
+        if animated { transition(to: target) }
+        else { panel.setFrame(target, display: true); applySizing(); persist() }
+    }
     func dropHover(_ entered: Bool) {
         hoverTask?.cancel()
         if entered && collapsed {
@@ -199,6 +236,13 @@ final class ShelfWindow: NSObject, NSWindowDelegate {
         panel.setFrame(frame, display: true)
     }
     func persist() {
+        // Keep controls in place while dragging; settle their alignment on release.
+        if !moving && timer == nil {
+            let frame = panel.frame, visible = screen.visibleFrame
+            dockedEdge = collapsed ? edge : (abs(frame.minX - visible.minX) <= 1 ? "left" :
+                (abs(frame.maxX - visible.maxX) <= 1 ? "right" : nil))
+            if let dockedEdge { edge = dockedEdge }
+        }
         defaults.set(NSStringFromRect(panel.frame), forKey: "shelfFrame")
         defaults.set(NSStringFromSize(expandedSize), forKey: "shelfSize")
         defaults.set(collapsed, forKey: "shelfCollapsed")
@@ -208,19 +252,26 @@ final class ShelfWindow: NSObject, NSWindowDelegate {
 
 struct ShelfMoveHandle: NSViewRepresentable {
     let shelf: ShelfWindow
-    func makeNSView(context: Context) -> HandleView { HandleView(shelf: shelf) }
-    func updateNSView(_ view: HandleView, context: Context) {}
+    var resizing = false
+    func makeNSView(context: Context) -> HandleView { HandleView(shelf: shelf, resizing: resizing) }
+    func updateNSView(_ view: HandleView, context: Context) { view.window?.invalidateCursorRects(for: view) }
     final class HandleView: NSView {
         let shelf: ShelfWindow
+        let resizing: Bool
         var start = CGPoint.zero
-        init(shelf: ShelfWindow) {
-            self.shelf = shelf; super.init(frame: .zero)
-            setAccessibilityElement(true); setAccessibilityRole(.button)
-            setAccessibilityLabel("Move shelf. Click the edge tab to expand.")
+        init(shelf: ShelfWindow, resizing: Bool) {
+            self.shelf = shelf; self.resizing = resizing; super.init(frame: .zero)
+            setAccessibilityElement(true); setAccessibilityRole(resizing ? .growArea : .button)
+            setAccessibilityLabel(resizing ? "Resize shelf" : "Move shelf. Click the edge tab to expand.")
+            if resizing { setAccessibilityHelp("Drag to resize. Activate to restore two rows of images.") }
         }
         required init?(coder: NSCoder) { fatalError() }
         override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
-        override func resetCursorRects() { addCursorRect(bounds, cursor: .openHand) }
+        override func resetCursorRects() {
+            addCursorRect(bounds, cursor: resizing
+                ? .frameResize(position: shelf.dockedEdge == "right" ? .bottomLeft : .bottomRight, directions: .all)
+                : .openHand)
+        }
         override func mouseDown(with event: NSEvent) {
             start = window?.convertPoint(toScreen: event.locationInWindow) ?? event.locationInWindow
             shelf.beginMove(at: start)
@@ -228,16 +279,22 @@ struct ShelfMoveHandle: NSViewRepresentable {
             guard let trackingWindow = window else { return }
             while let next = trackingWindow.nextEvent(matching: [.leftMouseDragged, .leftMouseUp]) {
                 if next.type == .leftMouseUp { mouseUp(with: next); break }
-                shelf.move(to: trackingWindow.convertPoint(toScreen: next.locationInWindow))
+                track(to: trackingWindow.convertPoint(toScreen: next.locationInWindow))
             }
         }
         override func mouseDragged(with event: NSEvent) {
-            shelf.move(to: window?.convertPoint(toScreen: event.locationInWindow) ?? event.locationInWindow)
+            track(to: window?.convertPoint(toScreen: event.locationInWindow) ?? event.locationInWindow)
+        }
+        private func track(to point: CGPoint) {
+            if resizing { shelf.resize(to: point) } else { shelf.move(to: point) }
         }
         override func mouseUp(with event: NSEvent) {
             let p = shelf.panel.convertPoint(toScreen: event.locationInWindow)
-            shelf.endMove(wasClick: hypot(start.x - p.x, start.y - p.y) < 4)
+            shelf.endMove(wasClick: !resizing && hypot(start.x - p.x, start.y - p.y) < 4)
         }
-        override func accessibilityPerformPress() -> Bool { shelf.expand(); return true }
+        override func accessibilityPerformPress() -> Bool {
+            if resizing { shelf.restoreTwoRows() } else { shelf.expand() }
+            return true
+        }
     }
 }

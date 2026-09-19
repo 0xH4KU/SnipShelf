@@ -198,6 +198,11 @@ final class ShelfOrganizationTests: XCTestCase {
             return scroll.contentView.bounds.minY
         }
         try await settle()
+        let initialGrid = try grid()
+        for index in 0..<4 {
+            let frame = try XCTUnwrap(initialGrid.layoutAttributesForItem(at: IndexPath(item: index, section: 0))).frame
+            XCTAssertTrue(initialGrid.visibleRect.contains(frame), "The default Shelf must fit two complete rows, including handles and names")
+        }
         store.selectedIDs = [loose[4].id, loose[5].id]
         try await settle()
         let rootY = try scroll(to: 520)
@@ -245,6 +250,35 @@ final class ShelfOrganizationTests: XCTestCase {
         store.openFolder(nil); store.selection = empty.id
         store.openFolder(full.id); store.openFolder(nil)
         XCTAssertEqual(store.selectedFolderID, empty.id, "The Shelf remembers a selected group as well as images")
+
+        let manualSize = CGSize(width: 460, height: 400)
+        app.shelf.panel.setContentSize(manualSize)
+        app.shelf.recoverScreen()
+        try await settle()
+        app.openFolder(empty.id)
+        try await settle()
+        XCTAssertEqual(app.shelf.panel.frame.size, manualSize, "Switching groups must preserve manual sizing")
+        _ = try store.add(image, name: "New image", folderID: empty.id)
+        try await settle()
+        XCTAssertEqual(app.shelf.panel.frame.size, manualSize, "Adding an image must preserve manual sizing")
+        store.searchText = "No matching image"
+        try await settle()
+        XCTAssertEqual(app.shelf.panel.frame.size, manualSize)
+        for query in ["No matching image", ""] {
+            store.searchText = query
+            try await settle()
+            let before = app.shelf.panel.frame
+            app.shelf.restoreTwoRows()
+            try await Task.sleep(for: .milliseconds(260))
+            try await settle()
+            let collection = try grid()
+            let layout = try XCTUnwrap(collection.collectionViewLayout as? NSCollectionViewFlowLayout)
+            let viewport = try XCTUnwrap(collection.enclosingScrollView).contentView.bounds
+            XCTAssertEqual(viewport.height, layout.itemSize.height * 2 + layout.minimumLineSpacing + layout.sectionInset.top + layout.sectionInset.bottom, accuracy: 1)
+            XCTAssertEqual(app.shelf.panel.frame.width, before.width, "Restoring two rows keeps the chosen column width")
+            XCTAssertEqual(app.shelf.panel.frame.maxY, before.maxY, accuracy: 1)
+            XCTAssertEqual(NSSizeFromString(try XCTUnwrap(preferences.string(forKey: "shelfSize"))), app.shelf.panel.frame.size)
+        }
     }
 
     @MainActor func testImageRenameAndReferenceBackgroundsUpdateNativeWindows() async throws {

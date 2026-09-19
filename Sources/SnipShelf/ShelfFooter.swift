@@ -3,30 +3,32 @@ import SwiftUI
 struct ShelfFooter: View {
     let app: AppController
     private var store: ShelfStore { app.store }
+    private var floating: Bool { app.shelf.dockedEdge == nil }
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         HStack(spacing: 8) {
-            if app.busy { ProgressView().controlSize(.mini).accessibilityLabel("Adding images") }
-            Text(status)
-                .font(.caption).foregroundStyle(.secondary).monospacedDigit()
-                .lineLimit(1).help(status)
             Spacer(minLength: 0)
             if let clip = store.selectedClip {
                 Button { app.openReference(.clip(clip.id)) } label: {
                     Label { Text("Open Floating Reference") } icon: { Image(nsImage: ReferencePinButton.icon) }
                 }
                     .labelStyle(.iconOnly).frame(width: 28, height: 28).help("Open floating reference (⇧⌘P)")
+                    .environment(\.layoutDirection, .leftToRight)
                 Button("Copy Image", systemImage: "doc.on.doc") { app.copy(clip) }
                     .labelStyle(.iconOnly).frame(width: 28, height: 28).help("Copy image (⌘C)")
+                    .environment(\.layoutDirection, .leftToRight)
             } else if store.selectedFolderID != nil || store.selectedIDs.count > 1 {
                 Button(action: app.pinSelection) {
                     Label { Text("Open Selection as References") } icon: { Image(nsImage: ReferencePinButton.icon) }
                 }
                     .labelStyle(.iconOnly).frame(width: 28, height: 28).help("Open selection as floating references (⇧⌘P)")
+                    .environment(\.layoutDirection, .leftToRight)
             }
             if !store.undoHistory.isEmpty {
                 Button(store.undoTitle, systemImage: "arrow.uturn.backward", action: store.undo)
                     .labelStyle(.iconOnly).frame(width: 28, height: 28).help("\(store.undoTitle) (⌘Z)")
+                    .environment(\.layoutDirection, .leftToRight)
             }
             Menu("Shelf Options", systemImage: "ellipsis") {
                 if !store.selectedIDs.isEmpty {
@@ -58,6 +60,8 @@ struct ShelfFooter: View {
                     Button("Close All Reference Windows", systemImage: "xmark.rectangle", action: app.closeAllReferences)
                     Divider()
                 }
+                Button("Restore Two-Row Size", systemImage: "arrow.up.left.and.arrow.down.right") { app.shelf.restoreTwoRows() }
+                Divider()
                 Button("Paste Image", systemImage: "document.on.clipboard", action: app.paste)
                     .disabled(app.busy || store.isReadOnly)
                 Button("Clear Shelf…", systemImage: "trash", role: .destructive, action: app.clearShelf)
@@ -74,22 +78,14 @@ struct ShelfFooter: View {
                 Button("Quit SnipShelf") { NSApp.terminate(nil) }
             }
             .labelStyle(.iconOnly).menuStyle(.borderlessButton).menuIndicator(.hidden)
+            .environment(\.layoutDirection, .leftToRight)
             .fixedSize().frame(width: 28, height: 28).help("Shelf and selection options")
+            if floating { Spacer(minLength: 0) }
         }
+        .environment(\.layoutDirection, app.shelf.dockedEdge == "left" ? .rightToLeft : .leftToRight)
         .buttonStyle(.borderless).controlSize(.regular)
-        .padding(.horizontal, 14).padding(.vertical, 4)
+        .padding(.horizontal, 28).padding(.vertical, 4)
+        .animation(reduceMotion ? nil : .easeInOut(duration: 0.18), value: app.shelf.dockedEdge)
     }
 
-    private var status: String {
-        if let status = app.status { return status }
-        if store.transferringLibrary { return "Transferring library…" }
-        if app.busy { return "Adding images…" }
-        if store.latestID != nil { return "Clip saved" }
-        if !store.selectedIDs.isEmpty { return "\(store.selectedIDs.count) selected" }
-        let count = store.visibleClips.count
-        if store.isSearching { return "\(count) \(count == 1 ? "result" : "results") · All groups" }
-        let clips = "\(count) \(count == 1 ? "clip" : "clips")"
-        guard store.currentFolderID == nil, !store.folders.isEmpty else { return clips }
-        return "\(store.folders.count) \(store.folders.count == 1 ? "group" : "groups") · \(clips)"
-    }
 }
