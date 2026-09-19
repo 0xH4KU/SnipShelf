@@ -26,8 +26,12 @@ struct ShelfCollection: NSViewRepresentable {
         scroll.contentView = clipView
         scroll.hasVerticalScroller = true
         scroll.scrollerStyle = .overlay
-        scroll.verticalScroller?.controlSize = .small
         scroll.autohidesScrollers = true
+        if referenceFolderID == nil {
+            scroll.verticalScroller = HiddenScroller()
+            scroll.verticalScroller?.isHidden = true
+        }
+        scroll.verticalScroller?.controlSize = .small
         let collection = CollectionView()
         collection.app = app
         collection.referenceFolderID = referenceFolderID
@@ -318,6 +322,14 @@ struct ShelfCollection: NSViewRepresentable {
             let border = NSBezierPath(roundedRect: bounds.insetBy(dx: 0.5, dy: 0.5), xRadius: 6, yRadius: 6)
             border.lineWidth = 0.75
             border.stroke()
+        }
+    }
+    final class HiddenScroller: NSScroller {
+        override class var isCompatibleWithOverlayScrollers: Bool { true }
+        // Keep native scrolling enabled while preventing layout or hover from showing its control.
+        override var isHidden: Bool {
+            get { super.isHidden }
+            set { super.isHidden = true }
         }
     }
     final class ClipView: NSClipView {

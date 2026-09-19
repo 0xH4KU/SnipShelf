@@ -189,7 +189,11 @@ final class ShelfOrganizationTests: XCTestCase {
             (view as? ShelfCollection.CollectionView) ?? view.subviews.lazy.compactMap { collection(in: $0) }.first
         }
         func grid() throws -> ShelfCollection.CollectionView {
-            try XCTUnwrap(collection(in: try XCTUnwrap(app.shelf.panel.contentView)))
+            let grid = try XCTUnwrap(collection(in: try XCTUnwrap(app.shelf.panel.contentView)))
+            let scroll = try XCTUnwrap(grid.enclosingScrollView)
+            XCTAssertTrue(scroll.verticalScroller?.isHiddenOrHasHiddenAncestor ?? true,
+                          "Mounting, scrolling or updating the collection must not show the Shelf's scrollbar")
+            return grid
         }
         func scroll(to y: CGFloat) throws -> CGFloat {
             let scroll = try XCTUnwrap(try grid().enclosingScrollView)
@@ -203,6 +207,13 @@ final class ShelfOrganizationTests: XCTestCase {
             let frame = try XCTUnwrap(initialGrid.layoutAttributesForItem(at: IndexPath(item: index, section: 0))).frame
             XCTAssertTrue(initialGrid.visibleRect.contains(frame), "The default Shelf must fit two complete rows, including handles and names")
         }
+        let scrollView = try XCTUnwrap(initialGrid.enclosingScrollView)
+        let wheel = try XCTUnwrap(CGEvent(scrollWheelEvent2Source: nil, units: .pixel, wheelCount: 1,
+                                         wheel1: -160, wheel2: 0, wheel3: 0))
+        scrollView.scrollWheel(with: try XCTUnwrap(NSEvent(cgEvent: wheel)))
+        try await settle()
+        XCTAssertGreaterThan(try grid().visibleRect.minY, 0, "Hiding the scrollbar must preserve wheel and trackpad scrolling")
+        _ = try scroll(to: 0)
         store.selectedIDs = [loose[4].id, loose[5].id]
         try await settle()
         let rootY = try scroll(to: 520)

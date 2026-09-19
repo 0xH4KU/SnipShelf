@@ -1,11 +1,23 @@
 # Validation
 
-Last automated check: 2026-09-18. Host: Apple Silicon, macOS 27.0 (26A428). Builds use the locally installed Xcode and macOS SDK. Deployment target: macOS 26. Local app bundles are ad-hoc signed, not notarized. Manual evidence is dated below.
+Last automated check: 2026-09-19. Host: Apple Silicon, macOS 27.0 (26A428). Builds use the locally installed Xcode and macOS SDK. Deployment target: macOS 26. Local app bundles are ad-hoc signed, not notarized. Manual evidence is dated below.
 
-The complete current suite passes all 76 tests. The separate library, capture,
+The most recent full-suite run, on September 18, passed all 76 tests. The separate library, capture,
 and Palette Lab commit snapshots also compile and pass their focused checks.
 Both build scripts pass shell syntax checks. Logs for this verification are
 under `.local/commit-sequence/`, including `04-integration.log` for the full suite.
+
+## September 19 Shelf controls and scrolling
+
+Three focused native collection tests pass, covering hidden Shelf scrollbars
+during layout updates, wheel scrolling, selection and scroll restoration across
+groups and tucking, grouped previews and drops, and independent floating
+reference windows. The Shelf retains native scrolling while hiding only its
+scroller view; floating group references keep their existing scrollbar behavior.
+
+The app was rebuilt, signature-verified, and relaunched with the compact toolbar
+and standard Capture button. Direct Computer Use plugin checks confirmed that a
+24-clip group scrolls in both directions without displaying a scrollbar.
 
 ## September 18 preview palettes and compact layout
 
