@@ -286,13 +286,14 @@ struct CaptureReviewView: View {
                     Text("Cutout").tag(true)
                 }.pickerStyle(.segmented).labelsHidden().frame(width: 170)
                 Spacer()
-                Button("Fit") { model.fitReview() }.help("Fit selection (⌘0)").keyboardShortcut("0", modifiers: .command)
+                Button("Fit") { model.fitReview() }.buttonHover().help("Fit selection (⌘0)").keyboardShortcut("0", modifiers: .command)
                 Button("100%") { model.reviewActualSize = true; model.reviewScale = 1; model.reviewOffset = .zero }
+                    .buttonHover()
                     .help("Actual pixels (⌘1)").keyboardShortcut("1", modifiers: .command)
                 Button("Zoom Out", systemImage: "minus.magnifyingglass") { model.reviewScale = max(0.1, model.reviewScale / 1.25) }
-                    .labelStyle(.iconOnly).help("Zoom out (⌘−)")
+                    .labelStyle(.iconOnly).buttonHover().help("Zoom out (⌘−)")
                 Button("Zoom In", systemImage: "plus.magnifyingglass") { model.reviewScale = min(16, model.reviewScale * 1.25) }
-                    .labelStyle(.iconOnly).help("Zoom in (⌘+ or ⌘=) · Pinch to zoom, scroll to pan")
+                    .labelStyle(.iconOnly).buttonHover().help("Zoom in (⌘+ or ⌘=) · Pinch to zoom, scroll to pan")
             }.buttonStyle(.borderless).controlSize(.small).padding(12).disabled(model.paintingMask)
             Divider()
             SelectionCanvas(model: model, reviewOnly: true).clipped()
@@ -306,9 +307,11 @@ struct CaptureReviewView: View {
                             ForEach(CanvasModel.MaskTool.allCases, id: \.self) { Text("\($0.rawValue) (\($0.shortcut))").tag($0) }
                         }.pickerStyle(.segmented).labelsHidden().disabled(!model.canTouchUp)
                         Button("Undo", systemImage: "arrow.uturn.backward") { model.undoSelection() }
+                            .buttonHover()
                             .disabled(!model.canUndo).keyboardShortcut("z", modifiers: .command)
                             .help("Undo last edit (⌘Z)")
                         Button("Redo", systemImage: "arrow.uturn.forward") { model.redoMaskStroke() }
+                            .buttonHover()
                             .disabled(!model.canTouchUp || !model.canRedoMask).keyboardShortcut("z", modifiers: [.command, .shift])
                             .help("Redo last stroke (⇧⌘Z)")
                     }.labelStyle(.titleOnly)
@@ -342,15 +345,17 @@ struct CaptureReviewView: View {
                             ForEach(app.store.folders) { Text($0.name).tag(Optional($0.id)) }
                         }.lineLimit(1)
                         Button("Keep & Continue") { model.confirm(keepSelecting: true) }
+                            .buttonHover()
                             .disabled(!model.canConfirm).help("Save this clip and select another area of the same image (⌘Return)")
                     }
                 }
                 HStack(spacing: 8) {
-                    Button("Redraw") { refine(); model.reset() }.help("Draw a new selection on the same image")
+                    Button("Redraw") { refine(); model.reset() }.buttonHover().help("Draw a new selection on the same image")
                     Button(model.mode == .rectangle ? "Adjust Rectangle" : "Refine Outline", action: refine)
+                        .buttonHover()
                         .help("Return to the original image to adjust the selection")
                     Spacer()
-                    Button("Keep Clip") { model.confirm() }.buttonStyle(.borderedProminent)
+                    Button("Keep Clip") { model.confirm() }.buttonStyle(.borderedProminent).buttonHover()
                         .keyboardShortcut(.defaultAction).disabled(!model.canConfirm)
                 }
             }.buttonStyle(.bordered).controlSize(.small).padding(14).disabled(model.paintingMask)
@@ -367,7 +372,7 @@ struct SubjectMaskControl: View {
                     .toggleStyle(.switch).controlSize(.small)
                     .help("Remove background around the subject inside your selection. Turn off to restore your original cutout.")
                 if model.canRetryCorrection {
-                    Button("Retry") { model.retryCorrection() }.controlSize(.small)
+                    Button("Retry") { model.retryCorrection() }.controlSize(.small).buttonHover()
                         .help("Try removing the background again")
                 }
             }
@@ -459,24 +464,29 @@ struct CaptureView: View {
                                         ForEach(CanvasModel.Mode.allCases, id: \.self) { Text($0.rawValue).tag($0) }
                                     }.pickerStyle(.segmented).labelsHidden().frame(width: 232).disabled(model.selecting)
                                     Button { showAssist.toggle() } label: { Image(systemName: "wand.and.stars") }
+                                        .buttonHover()
                                         .help("Selection assistance").accessibilityLabel("Selection assistance")
                                         .disabled(model.selecting).popover(isPresented: $showAssist) {
                                             SelectionAssistanceView(model: model).padding(20).frame(width: 270)
                                         }
                                     Divider().frame(height: 18)
                                 }
-                                Button("Fit") { model.fit() }.help("Fit image (⌘0)").disabled(model.selecting)
-                                Button("100%") { model.actualSize = true; model.scale = 1; model.offset = .zero }.help("Actual pixels (⌘1)").disabled(model.selecting)
+                                Button("Fit") { model.fit() }.buttonHover().help("Fit image (⌘0)").disabled(model.selecting)
+                                Button("100%") { model.actualSize = true; model.scale = 1; model.offset = .zero }.buttonHover().help("Actual pixels (⌘1)").disabled(model.selecting)
                                 Button { model.scale = max(0.1, model.scale / 1.25) } label: { Image(systemName: "minus.magnifyingglass") }
+                                    .buttonHover()
                                     .help("Zoom out (⌘−)").accessibilityLabel("Zoom out").disabled(model.selecting)
                                 Button { model.scale = min(16, model.scale * 1.25) } label: { Image(systemName: "plus.magnifyingglass") }
+                                    .buttonHover()
                                     .help("Zoom in (⌘+ or ⌘=)").accessibilityLabel("Zoom in").disabled(model.selecting)
                                 if !model.reviewing {
                                     Divider().frame(height: 18)
                                     Button { model.undoSelection() } label: { Image(systemName: "arrow.uturn.backward") }
+                                        .buttonHover()
                                         .help("Undo last refinement (⌘Z)").accessibilityLabel("Undo last refinement")
                                         .disabled(!model.canUndo).keyboardShortcut("z", modifiers: .command)
                                     Button { model.cancel() } label: { Image(systemName: "xmark") }
+                                        .buttonHover()
                                         .help("Cancel (Esc)").accessibilityLabel("Cancel capture").keyboardShortcut(.cancelAction)
                                 }
                             }.buttonStyle(.borderless).controlSize(.regular).disabled(model.paintingMask)

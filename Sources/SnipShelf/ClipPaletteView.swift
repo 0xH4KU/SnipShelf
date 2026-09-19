@@ -16,6 +16,7 @@ struct ClipPaletteView: View {
                     Spacer(minLength: 0)
                     Button("Analysis Settings", systemImage: "slider.horizontal.3") { palette.settingsPresented = true }
                         .labelStyle(.iconOnly).buttonStyle(.plain).help("Palette analysis settings")
+                        .buttonHover()
                 }.font(.caption).padding(10)
             }
         }.background(.bar)

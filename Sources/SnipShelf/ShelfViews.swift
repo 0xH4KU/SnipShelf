@@ -84,8 +84,8 @@ struct ShelfView: View {
                     Image(systemName: "exclamationmark.triangle")
                     Text("Unsaved clip").font(.caption)
                     Spacer()
-                    Button("Retry") { store.retryPending() }
-                    Button("Export…") { app.exportPending() }
+                    Button("Retry") { store.retryPending() }.buttonHover()
+                    Button("Export…") { app.exportPending() }.buttonHover()
                 }.font(.caption).padding(10).background(Color.orange.opacity(0.12))
                     .accessibilityValue("\(pending.width) by \(pending.height) pixels")
             }
@@ -218,13 +218,15 @@ struct SettingsView: View {
                 HStack {
                     Text("Clips are saved on this Mac.").foregroundStyle(.secondary)
                     Spacer()
-                    Button("Show in Finder") { NSWorkspace.shared.open(app.store.root) }
+                    Button("Show in Finder") { NSWorkspace.shared.open(app.store.root) }.buttonHover()
                 }
-                Button("Recently Deleted…", action: app.showRecentlyDeleted)
+                Button("Recently Deleted…", action: app.showRecentlyDeleted).buttonHover()
                 HStack {
                     Button("Back Up Library…", action: app.backupLibrary)
+                        .buttonHover()
                         .disabled(app.busy || app.store.isReadOnly || app.store.pendingImage != nil)
                     Button("Restore Library…", action: app.restoreLibrary)
+                        .buttonHover()
                         .disabled(app.busy || app.store.transferringLibrary || app.store.pendingImage != nil)
                 }
                 if app.store.transferringLibrary { ProgressView("Transferring library…").controlSize(.small) }

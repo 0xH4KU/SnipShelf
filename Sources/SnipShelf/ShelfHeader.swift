@@ -28,6 +28,7 @@ struct ShelfHeader: View {
                 if app.store.currentFolder != nil {
                     Button("Back to Shelf", systemImage: direction == .rightToLeft ? "chevron.right" : "chevron.left") { app.openFolder(nil) }
                         .labelStyle(.iconOnly).frame(width: 28, height: 28)
+                        .buttonHover()
                         .environment(\.layoutDirection, .leftToRight)
                         .help("Back to Shelf (⌘[) · Drop clips here to move them out")
                         .onDrop(of: ShelfDropDelegate.types, delegate: ShelfFolderDropDelegate(app: app, folderID: nil))
@@ -51,10 +52,11 @@ struct ShelfHeader: View {
                     }
                     .labelStyle(.iconOnly).menuStyle(.borderlessButton).menuIndicator(.hidden)
                     .environment(\.layoutDirection, .leftToRight)
-                    .fixedSize().frame(width: 28, height: 28).help("Group options")
+                    .fixedSize().frame(width: 28, height: 28).buttonHover().help("Group options")
                 }
                 Button("Tuck Shelf to Edge", systemImage: app.shelf.edge == "left" ? "sidebar.left" : "sidebar.right", action: app.shelf.collapse)
                     .labelStyle(.iconOnly).frame(width: 28, height: 28)
+                    .buttonHover()
                     .environment(\.layoutDirection, .leftToRight)
                     .foregroundStyle(.secondary).help("Tuck shelf to the screen edge (Esc)")
             }
@@ -69,9 +71,11 @@ struct ShelfHeader: View {
                 }
                 HStack(spacing: 8) {
                     Button("Capture", systemImage: "lasso", action: app.capture)
+                        .buttonHover()
                         .environment(\.layoutDirection, .leftToRight)
                         .help("Capture an element (\(app.shortcutLabel))").disabled(app.busy || app.store.isReadOnly)
                     Button("Import", systemImage: "plus", action: app.chooseImages)
+                        .buttonHover()
                         .environment(\.layoutDirection, .leftToRight)
                         .help("Import images (⌘O)").disabled(app.busy || app.store.isReadOnly)
                 }
@@ -80,6 +84,7 @@ struct ShelfHeader: View {
                     .labelStyle(.iconOnly).frame(width: 28, height: 28)
                     .environment(\.layoutDirection, .leftToRight)
                     .buttonStyle(.borderless)
+                    .buttonHover()
                     .help(app.store.selectedIDs.isEmpty ? "New group (⇧⌘N)" : "New group with selection (⇧⌘N)")
                     .disabled(app.store.isReadOnly)
             }
@@ -95,6 +100,7 @@ struct ShelfHeader: View {
                 if !store.searchText.isEmpty {
                     Button("Clear Search", systemImage: "xmark.circle.fill") { store.searchText = "" }
                         .labelStyle(.iconOnly).buttonStyle(.plain).foregroundStyle(.secondary)
+                        .buttonHover()
                 }
             }
             .padding(7).background(.quaternary, in: RoundedRectangle(cornerRadius: 8))

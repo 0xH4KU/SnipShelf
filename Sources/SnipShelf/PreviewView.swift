@@ -24,8 +24,10 @@ private struct PreviewContent: View {
             HStack(spacing: 8) {
                 ControlGroup {
                     Button("Previous Clip", systemImage: "chevron.left") { app.movePreview(-1) }
+                        .buttonHover()
                         .disabled(app.adjacentPreview(-1) == nil).help("Previous clip (←)")
                     Button("Next Clip", systemImage: "chevron.right") { app.movePreview(1) }
+                        .buttonHover()
                         .disabled(app.adjacentPreview(1) == nil).help("Next clip (→)")
                 }.labelStyle(.iconOnly).fixedSize()
                 if let index = app.previewClips.firstIndex(where: { $0.id == clip.id }) {
@@ -38,13 +40,14 @@ private struct PreviewContent: View {
                     }
                 }
                     .labelStyle(.iconOnly)
+                    .buttonHover()
                     .help("Keep this image in a separate reference window (⇧⌘P)")
                 Menu("Image Actions", systemImage: "ellipsis") {
                     Button("Rename Image…", systemImage: "pencil") { app.renameClip(clip) }
                         .disabled(app.store.isReadOnly)
                     Button("Crop a Copy…", systemImage: "crop") { app.previewClip = nil; app.recrop(clip) }
                     Button("Export PNG…", systemImage: "square.and.arrow.up") { app.export(clip) }
-                }.labelStyle(.iconOnly).menuIndicator(.hidden).fixedSize().help("Image actions")
+                }.labelStyle(.iconOnly).menuIndicator(.hidden).fixedSize().buttonHover().help("Image actions")
             }.buttonStyle(.bordered).controlSize(.small).padding(10)
                 .background(.bar)
             Divider()

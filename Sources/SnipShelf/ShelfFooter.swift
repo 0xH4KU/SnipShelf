@@ -14,20 +14,24 @@ struct ShelfFooter: View {
                     Label { Text("Open Floating Reference") } icon: { Image(nsImage: ReferencePinButton.icon) }
                 }
                     .labelStyle(.iconOnly).frame(width: 28, height: 28).help("Open floating reference (⇧⌘P)")
+                    .buttonHover()
                     .environment(\.layoutDirection, .leftToRight)
                 Button("Copy Image", systemImage: "doc.on.doc") { app.copy(clip) }
                     .labelStyle(.iconOnly).frame(width: 28, height: 28).help("Copy image (⌘C)")
+                    .buttonHover()
                     .environment(\.layoutDirection, .leftToRight)
             } else if store.selectedFolderID != nil || store.selectedIDs.count > 1 {
                 Button(action: app.pinSelection) {
                     Label { Text("Open Selection as References") } icon: { Image(nsImage: ReferencePinButton.icon) }
                 }
                     .labelStyle(.iconOnly).frame(width: 28, height: 28).help("Open selection as floating references (⇧⌘P)")
+                    .buttonHover()
                     .environment(\.layoutDirection, .leftToRight)
             }
             if !store.undoHistory.isEmpty {
                 Button(store.undoTitle, systemImage: "arrow.uturn.backward", action: store.undo)
                     .labelStyle(.iconOnly).frame(width: 28, height: 28).help("\(store.undoTitle) (⌘Z)")
+                    .buttonHover()
                     .environment(\.layoutDirection, .leftToRight)
             }
             Menu("Shelf Options", systemImage: "ellipsis") {
@@ -79,7 +83,7 @@ struct ShelfFooter: View {
             }
             .labelStyle(.iconOnly).menuStyle(.borderlessButton).menuIndicator(.hidden)
             .environment(\.layoutDirection, .leftToRight)
-            .fixedSize().frame(width: 28, height: 28).help("Shelf and selection options")
+            .fixedSize().frame(width: 28, height: 28).buttonHover().help("Shelf and selection options")
             if floating { Spacer(minLength: 0) }
         }
         .environment(\.layoutDirection, app.shelf.dockedEdge == "left" ? .rightToLeft : .leftToRight)

@@ -33,12 +33,13 @@ struct RecentlyDeletedView: View {
                 Menu("Select", systemImage: "checklist") {
                     Button("Select All") { selected = Set(app.store.deleted.map(\.id)) }
                     Button("Deselect All") { selected = [] }
-                }.fixedSize()
+                }.fixedSize().buttonHover()
                 Text("\(selected.count) selected").font(.caption).foregroundStyle(.secondary)
                 Spacer()
                 Group {
                     Button("Delete Permanently…", role: .destructive) { app.deletePermanently(selected) }
-                    Button("Restore") { app.store.restoreDeleted(selected) }.buttonStyle(.borderedProminent)
+                        .buttonHover()
+                    Button("Restore") { app.store.restoreDeleted(selected) }.buttonStyle(.borderedProminent).buttonHover()
                 }.disabled(selected.isEmpty || app.store.isReadOnly)
             }.padding(12)
         }
