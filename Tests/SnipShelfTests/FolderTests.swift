@@ -473,7 +473,8 @@ extension FolderTests {
         card.picture.image = store.thumbnail(for: b)
         card.pinButton.app = app; card.pinButton.referenceTarget = .clip(b.id)
         app.shelf.panel.contentView!.addSubview(card)
-        card.pinButton.performClick(nil)
+        // performClick can run the opening timer during its simulated button press.
+        XCTAssertTrue(card.pinButton.sendAction(card.pinButton.action, to: card.pinButton.target))
         let windows = app.referenceWindows
         let frames = windows.mapValues { $0.referenceTransition?.destinationFrame ?? $0.frame }
         XCTAssertTrue(windows.values.allSatisfy { closeButton($0)?.title == "Close All · 3" })
@@ -745,7 +746,8 @@ extension FolderTests {
         XCTAssertEqual(preferences.string(forKey: ReferenceTarget.clip(b.id).frameKey), previousSavedFrame)
         try await Task.sleep(for: .milliseconds(320))
         app.toggleReferences()
-        card.pinButton.performClick(nil)
+        // Inspect the transition before a simulated button press can finish it.
+        XCTAssertTrue(card.pinButton.sendAction(card.pinButton.action, to: card.pinButton.target))
         XCTAssertNotNil(app.referenceWindows[.clip(b.id)], "The separate window button opens a reference on click")
         let opening = try XCTUnwrap(app.referenceWindows[.clip(b.id)])
         let openingDestination = try XCTUnwrap(opening.referenceTransition?.destinationFrame)

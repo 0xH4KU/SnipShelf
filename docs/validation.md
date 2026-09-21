@@ -32,6 +32,9 @@ The first macOS 26 CI run exposed an offscreen test fixture: enlarging the
 preview kept its old origin, so AppKit moved it back onscreen on reopen. The
 resize test now centers the enlarged window before recording its frame, retaining
 the full size-and-position assertions for both image changes and reopening.
+Tests that close a reference during its opening transition dispatch the button
+action directly, avoiding `performClick`'s simulated press delay while retaining
+the transition, cancellation, and saved-frame assertions.
 
 ## September 19 Shelf controls and scrolling
 
