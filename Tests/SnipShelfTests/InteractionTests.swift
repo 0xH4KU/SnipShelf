@@ -743,6 +743,8 @@ final class InteractionTests: XCTestCase {
         }
         _ = try await fittedPreview()
         window.setContentSize(CGSize(width: 800, height: 640))
+        // Keep the enlarged fixture onscreen on smaller CI displays.
+        window.center()
         let resizedFrame = window.frame
         for clip in [portrait, landscape] {
             app.previewClip = clip

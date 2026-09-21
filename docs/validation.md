@@ -28,6 +28,11 @@ before publishing. Build output and release staging stay on the GitHub runner.
 Local README render studies and the rebuildable SwiftPM cache were removed;
 the running app was retained.
 
+The first macOS 26 CI run exposed an offscreen test fixture: enlarging the
+preview kept its old origin, so AppKit moved it back onscreen on reopen. The
+resize test now centers the enlarged window before recording its frame, retaining
+the full size-and-position assertions for both image changes and reopening.
+
 ## September 19 Shelf controls and scrolling
 
 Three focused native collection tests pass, covering hidden Shelf scrollbars
