@@ -2,13 +2,13 @@
 
 **Keep the part you love.** A free, native macOS shelf for the visual pieces of your creative work.
 
-Draw a lasso or polygon around an element, keep the transparent cutout nearby, and drag it into your work. Built with SwiftUI, AppKit, ScreenCaptureKit, and the native Liquid Glass material. No third-party dependencies, account, uploads, analytics, or subscription.
+Draw a lasso, polygon, or rectangle around an element, keep the cutout nearby, and drag it into your work. Built with SwiftUI, AppKit, ScreenCaptureKit, and the native Liquid Glass material. No third-party dependencies, account, uploads, analytics, or subscription.
 
-![SnipShelf with synthetic QA artwork](shelf.jpg)
+![Shelf and grouped references — HTML interface preview](screenshots/shelf.webp)
 
 ## Requirements and first launch
 
-- macOS 26 or newer. The 0.2.0 release ZIP supports Apple Silicon (arm64).
+- macOS 26 or newer. The 0.3.0 release ZIP supports Apple Silicon (arm64).
 - Unzip the download and move `SnipShelf.app` to Applications.
 - Open `SnipShelf.app`. It lives in the menu bar; there is no Dock icon.
 - Start a capture from the menu bar or press **Command–Shift–2**. If macOS asks, allow screen recording in **System Settings → Privacy & Security → Screen & System Audio Recording**. If the system requests a relaunch, quit and reopen the app.
@@ -24,7 +24,7 @@ Managed Macs may restrict this exception. You can also build from source.
 
 ## Selection and review
 
-![Review a selection before keeping it](review.jpg)
+![Capture Preview — HTML interface preview](screenshots/capture.webp)
 
 - Releasing a lasso (or finishing a polygon) hides the capture editor and opens a compact **Capture Preview** near the selection. The desktop becomes visible again. The preview stays visible when focus changes; Capture brings an unfinished selection back to the front. Nothing is stored until you press **Keep Clip** or Return; Escape or the preview's close button cancels.
 - **Remove Background** starts on for Lasso and Polygon, and off for Rectangle. Rectangle remembers its own choice separately. The switch is also available in the wand menu before drawing. Roughly circle an element; Apple Vision analyzes the selection's bounding rectangle, identifies the foreground subject with the most overlap, and removes its background inside your lasso. Soft edges and existing transparency are retained. Nothing outside your lasso is added. If no usable mask is available, the original cutout is kept; failures show the reason and offer **Retry**. Turn the switch off to restore the original cutout immediately; the preview and saved PNG both follow this choice. The setting persists, including any previous opt-out from Vision correction. Keep Clip becomes available when masking finishes, or immediately when you turn the switch off.
@@ -53,7 +53,7 @@ Managed Macs may restrict this exception. You can also build from source.
 
 Use **Crop a Copy** on an existing clip to crop it again without changing the original. Fit shows the whole image, 100% maps one source pixel to one display pixel, +/- or a pinch adjusts zoom, and scrolling pans. The same Fluid drawing, subject mask and touch-up controls are available here. Zoom and pan are locked during a stroke.
 
-PNG, JPEG, WebP, and HEIC files can be imported with the + button, dragged into the shelf, or opened with SnipShelf from Finder. Pasted image data is also supported. Images above 100 megapixels are rejected to bound memory use. Output is anti-aliased, 8-bit sRGB PNG with transparency; HDR output and animated images are outside v0.2.0.
+PNG, JPEG, WebP, and HEIC files can be imported with the + button, dragged into the shelf, or opened with SnipShelf from Finder. Pasted image data is also supported. Images above 100 megapixels are rejected to bound memory use. Output is anti-aliased, 8-bit sRGB PNG with transparency; HDR output and animated images are not supported.
 
 ## The shelf
 
@@ -129,4 +129,4 @@ The app writes image files before atomically replacing the index. If saving fail
 
 Full-resolution images are loaded for import, crop, preview, or export. The grid lazily loads small disk previews into a bounded cache. PNG/index writes are currently serial; extremely large imports can briefly stall the interface. Move encoding to a dedicated queue if that becomes a measured bottleneck.
 
-For build commands and the repository layout, see the [README](../README.md). See [validation](validation.md) for verified behavior and remaining checks.
+For build commands, the experimental labs, and the repository layout, see the [development guide](development.md). See [validation](validation.md) for verified behavior and remaining checks.

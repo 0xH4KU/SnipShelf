@@ -1,8 +1,8 @@
 # Validation
 
-Last automated check: 2026-09-19. Host: Apple Silicon, macOS 27.0 (26A428). Builds use the locally installed Xcode and macOS SDK. Deployment target: macOS 26. Local app bundles are ad-hoc signed, not notarized. Manual evidence is dated below.
+Last local automated check: 2026-09-21 (HTML preview); last native check: 2026-09-19. Host: Apple Silicon, macOS 27.0 (26A428). Deployment target: macOS 26. App bundles are ad-hoc signed, not notarized. Release tests and packaging now run on GitHub's macOS 26 runner. Manual evidence is dated below.
 
-The most recent full-suite run, on September 18, passed all 76 tests. The separate library, capture,
+The September 18 full-suite run passed all 76 tests. The separate library, capture,
 and Palette Lab commit snapshots also compile and pass their focused checks.
 Both build scripts pass shell syntax checks. Logs for this verification are
 under `.local/commit-sequence/`, including `04-integration.log` for the full suite.
@@ -12,6 +12,21 @@ apps were archived outside the checkout during the September 19 cleanup.
 Paths in the dated notes below refer to that archive; new QA runs recreate
 `.local/` as needed. The rebuildable `.build/` cache was removed, and the running
 `dist/SnipShelf.app` was retained.
+
+## September 21 README and release workflow
+
+The HTML interface preview passes all 21 built-in checks for scene navigation,
+groups, search, pinning, capture review, save/undo, palette settings, clipboard
+handling, and appearance. All four scenes fit a 390-point viewport without
+horizontal overflow. The README uses four lossless WebP exports of these scenes;
+the old JPEG previews have been removed. Documentation links, JavaScript syntax,
+and whitespace checks pass.
+
+The [Release workflow](../.github/workflows/release.yml) requires the full Swift
+test suite, release archive validation, and checksum verification to succeed
+before publishing. Build output and release staging stay on the GitHub runner.
+Local README render studies and the rebuildable SwiftPM cache were removed;
+the running app was retained.
 
 ## September 19 Shelf controls and scrolling
 
@@ -242,13 +257,16 @@ not committed as test fixtures.
 
 ## Release packaging
 
+Run the [Release workflow](../.github/workflows/release.yml) on `main` for the
+official build. To reproduce its packaging checks locally:
+
 ```sh
 ./scripts/build_and_run.sh --release
-python3 scripts/check_release.py dist/SnipShelf-0.2.0-arm64.zip
-(cd dist && shasum -a 256 -c SnipShelf-0.2.0-arm64.zip.sha256)
+python3 scripts/check_release.py dist/SnipShelf-0.3.0-arm64.zip
+(cd dist && shasum -a 256 -c SnipShelf-0.3.0-arm64.zip.sha256)
 ```
 
-The check verifies the exact bundled file list, version 0.2.0/build 3, arm64
+The check verifies the exact bundled file list, version 0.3.0/build 4, arm64
 architecture, and the ad-hoc signature after extraction. It rejects common
 local-user/build paths and private-key markers in bundled files. Only the app
 executable, plist, icon, MIT license, and signature resources are distributed;

@@ -1,0 +1,41 @@
+name: Release
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    if: github.ref == 'refs/heads/main'
+    runs-on: macos-26
+    timeout-minutes: 20
+    env:
+      DEVELOPER_DIR: /Applications/Xcode.app/Contents/Developer
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Test
+        run: swift test
+      - name: Build and validate release
+        run: ./scripts/build_and_run.sh --release
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          archives=(dist/SnipShelf-*-arm64.zip)
+          [[ ${#archives[@]} -eq 1 ]]
+          archive="${archives[0]}"
+          version="${archive#dist/SnipShelf-}"
+          version="${version%-arm64.zip}"
+          (cd dist && shasum -a 256 -c "${archive##*/}.sha256")
+          gh release create "v$version" "$archive" "$archive.sha256" \
+            --target "$GITHUB_SHA" --title "SnipShelf $version" \
+            --notes-file "docs/releases/$version.md" --draft
+          gh release edit "v$version" --draft=false --latest

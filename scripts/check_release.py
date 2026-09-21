@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate the locally built release ZIP, including its extracted signature."""
+"""Validate the release ZIP, including its extracted signature."""
 import plistlib
 import re
 import subprocess
@@ -26,8 +26,8 @@ with zipfile.ZipFile(archive) as bundle:
         assert b"PRIVATE KEY-----" not in data, f"Private key in {name}"
     info = plistlib.loads(bundle.read(prefix + "Info.plist"))
     assert info["CFBundleIdentifier"] == "org.snipshelf.app"
-    assert info["CFBundleVersion"] == "3"
-    assert info["CFBundleShortVersionString"] == "0.2.0"
+    assert info["CFBundleVersion"] == "4"
+    assert info["CFBundleShortVersionString"] == "0.3.0"
     assert info["LSMinimumSystemVersion"] == "26.0"
     assert archive.name == f"SnipShelf-{info['CFBundleShortVersionString']}-arm64.zip"
 
