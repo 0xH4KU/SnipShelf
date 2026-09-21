@@ -728,9 +728,19 @@ final class InteractionTests: XCTestCase {
             return view.subviews.lazy.compactMap(scrollIn).first
         }
         func fittedPreview() async throws -> PreviewImage.ImageScrollView {
-            try await Task.sleep(for: .milliseconds(150))
-            window.layoutIfNeeded(); content.layoutSubtreeIfNeeded()
-            let scroll = try XCTUnwrap(scrollIn(content))
+            let clip = try XCTUnwrap(app.previewClip)
+            let expectedSize = CGSize(width: clip.width, height: clip.height)
+            let deadline = ContinuousClock.now.advanced(by: .seconds(5))
+            var loadedScroll: PreviewImage.ImageScrollView?
+            repeat {
+                try await Task.sleep(for: .milliseconds(10))
+                window.layoutIfNeeded(); content.layoutSubtreeIfNeeded()
+                if let candidate = scrollIn(content),
+                   (candidate.documentView as? NSImageView)?.image?.size == expectedSize {
+                    loadedScroll = candidate; break
+                }
+            } while ContinuousClock.now < deadline
+            let scroll = try XCTUnwrap(loadedScroll, "The selected preview image must finish loading")
             scroll.layoutSubtreeIfNeeded()
             let picture = try XCTUnwrap(scroll.documentView)
             XCTAssertGreaterThanOrEqual(window.frame.width, 280)
